@@ -19,7 +19,8 @@ Chacun nettoie tout ce qu'il crée.
 | [`scenarios/engine.yaml`](../scenarios/engine.yaml) | 18 | ~2 min | Un projet, supprimé en fin de run | Machine avec GPU, navigateur visible |
 
 Chaque feature des fichiers YAML est précédée d'un commentaire qui dit ce qu'elle teste, comment
-c'est vérifié et ce qu'elle écrit en prod. Cette page en donne la vue d'ensemble.
+c'est vérifié et ce qu'elle écrit en prod. Cette page en donne la vue d'ensemble. Pour écrire ou
+modifier un scénario : [ecrire-un-scenario.md](ecrire-un-scenario.md).
 
 ## Lancer
 
@@ -309,5 +310,5 @@ et VS Code (extension YAML de Red Hat) propose l'autocomplétion grâce au JSON 
       - expect: { target: { id: scene-view-canvas }, rendered: true }
 ```
 
-Toutes les actions (`click`, `select`, `fill`, `drag`, `upload`, `store`…), les cibles et les
-vérifications sont décrites dans le [README](../README.md#écrire-un-scénario).
+Toutes les actions (`click`, `select`, `fill`, `drag`, `choose`, `upload`, `store`…), leurs options,
+les cibles et les vérifications sont décrites dans [ecrire-un-scenario.md](ecrire-un-scenario.md).

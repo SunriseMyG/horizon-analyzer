@@ -99,6 +99,11 @@ contextuel, lien `target=_blank`, mini serveur HTTP pour le cache). `test_runner
 
 ## Écrire ou modifier un scénario
 
+- La référence du format pour l'équipe est `docs/ecrire-un-scenario.md` : chaque champ, chaque
+  action et ses options, les cibles, les vérifications, les pièges YAML, et un exemple complet.
+  **Tout changement de `schema.py`** (nouvelle action, option, vérification) s'y reporte, avec le
+  résumé du README et le JSON Schema régénéré. L'exemple de la section 9 doit rester valide
+  (`horizon-analyzer validate`).
 - Chaque feature est précédée d'un bloc de commentaire en français : `Teste` / `Vérifie` /
   `Écrit` / `Pourquoi` / `Capture`. Garde ce format, l'utilisateur y tient.
 - Clés YAML piégeuses : une valeur avec `${...}` dans une map `{ }` doit être entre guillemets.

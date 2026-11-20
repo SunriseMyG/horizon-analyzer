@@ -44,7 +44,8 @@ avoir le bleu choisi pour couleur dominante (`dominant_color`) et bouger d'une c
 
 **Tout lancer** (Windows) : `.\run-all.ps1` installe ce qu'il faut au premier lancement, puis
 enchaîne le smoke, le parcours critique et le scénario moteur. Le détail de chaque feature, la lecture du rapport et
-le dépannage sont dans [docs/scenarios.md](docs/scenarios.md).
+le dépannage sont dans [docs/scenarios.md](docs/scenarios.md). Pour écrire un scénario :
+[docs/ecrire-un-scenario.md](docs/ecrire-un-scenario.md).
 
 ## Installation
 
@@ -92,6 +93,10 @@ Pour être prévenu d'un échec, mettre un webhook Discord ou Slack dans `HORIZO
 (ou `--webhook`).
 
 ## Écrire un scénario
+
+> **Guide complet** : [docs/ecrire-un-scenario.md](docs/ecrire-un-scenario.md). Il détaille chaque champ
+> (suite, feature, `teardown`, `cleanup`…), chaque action avec ses options, les cibles, les vérifications,
+> les pièges YAML et un exemple complet. Cette section en est le résumé.
 
 Un fichier = une suite de features, exécutées dans l'ordre sur la même page (la connexion de la
 première sert aux suivantes). Une feature = une liste d'étapes. Une étape = une action et ses
