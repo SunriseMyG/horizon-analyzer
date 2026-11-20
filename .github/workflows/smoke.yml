@@ -1,0 +1,32 @@
+name: Prod smoke
+
+# Le smoke tourne en headless sur les runners GitHub. La suite critique (3D) a besoin d'un vrai
+# GPU : elle se lance en local ou sur un runner self-hosted (voir README).
+on:
+  schedule:
+    - cron: "0 * * * *"
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev]"
+      - run: playwright install --with-deps chromium
+      - run: pytest
+      - run: horizon-analyzer run scenarios/smoke.yaml --headless
+        env:
+          HORIZON_EMAIL: ${{ secrets.HORIZON_EMAIL }}
+          HORIZON_PASSWORD: ${{ secrets.HORIZON_PASSWORD }}
+          HORIZON_WEBHOOK_URL: ${{ secrets.HORIZON_WEBHOOK_URL }}
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-report
+          path: runs/
+          retention-days: 14

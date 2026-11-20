@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "horizon-analyzer"
+version = "0.1.0"
+description = "Rejoue en production les parcours critiques d'Horizon décrits dans un fichier de scénarios YAML/JSON."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "pillow>=10",
+    "playwright>=1.50",
+    "pydantic>=2.6",
+    "pyyaml>=6.0",
+    "typer>=0.12",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+horizon-analyzer = "horizon_analyzer.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["browser: lance un vrai Chromium headless (pas de réseau)"]

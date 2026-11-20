@@ -1,0 +1,1204 @@
+{
+  "$defs": {
+    "ChooseStep": {
+      "additionalProperties": false,
+      "description": "Pick ``option`` (its value or its visible label) in a ``<select>``.",
+      "properties": {
+        "choose": {
+          "$ref": "#/$defs/Target"
+        },
+        "option": {
+          "title": "Option",
+          "type": "string"
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timeout"
+        }
+      },
+      "required": [
+        "choose",
+        "option"
+      ],
+      "title": "ChooseStep",
+      "type": "object"
+    },
+    "ClickStep": {
+      "additionalProperties": false,
+      "description": "Click ``click``. ``button: right`` opens a context menu; ``position`` clicks at that point of the element.",
+      "properties": {
+        "click": {
+          "$ref": "#/$defs/Target"
+        },
+        "button": {
+          "default": "left",
+          "enum": [
+            "left",
+            "right",
+            "middle"
+          ],
+          "title": "Button",
+          "type": "string"
+        },
+        "position": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Point"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "force": {
+          "default": false,
+          "title": "Force",
+          "type": "boolean"
+        },
+        "expect_response": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ResponseMatch"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timeout"
+        }
+      },
+      "required": [
+        "click"
+      ],
+      "title": "ClickStep",
+      "type": "object"
+    },
+    "DragStep": {
+      "additionalProperties": false,
+      "description": "Drag ``drag`` onto ``to`` with the mouse: HTML5 drag and drop (an asset onto the viewport),\na node moved in the script editor, or a wire pulled from one handle to another.\n\n``to_position`` drops at that point of ``to`` (from its top-left corner) instead of its centre.\n``steps`` moves the mouse there in that many small moves, holding the button, instead of\nPlaywright's HTML5 drag: node editors (xyflow) ignore a single jump. With ``steps``, the\npress happens at the centre of ``drag``, whatever covers it.",
+      "properties": {
+        "drag": {
+          "$ref": "#/$defs/Target"
+        },
+        "to": {
+          "$ref": "#/$defs/Target"
+        },
+        "to_position": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Point"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "steps": {
+          "anyOf": [
+            {
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Steps"
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timeout"
+        }
+      },
+      "required": [
+        "drag",
+        "to"
+      ],
+      "title": "DragStep",
+      "type": "object"
+    },
+    "ExpectStep": {
+      "additionalProperties": false,
+      "properties": {
+        "expect": {
+          "$ref": "#/$defs/Expectation"
+        }
+      },
+      "required": [
+        "expect"
+      ],
+      "title": "ExpectStep",
+      "type": "object"
+    },
+    "Expectation": {
+      "additionalProperties": false,
+      "description": "One or more checks, retried until they hold or ``timeout`` runs out.\n\nOn a ``target``: ``visible`` (true/false), ``text`` (contains), ``value`` (exact, for\ninputs), ``number`` (the input's value or the text, read as a number, equals this within\n``tolerance``: for engine values such as a rotation that comes back as 45.000004 after a\nquaternion round trip), ``count``, ``enabled``, ``checked`` (checkbox or radio), ``rendered`` (true: the\nelement's pixels are not one flat colour, e.g. a game canvas that draws something; false: it\nis blank), ``animated`` (true: two captures a moment apart differ, e.g. an object a script\nkeeps turning; false: the image holds still), ``dominant_color`` (``#RRGGBB``: the element's\nmost common colour, e.g. a game's background, is this one within ``color_tolerance`` per\nchannel). On the page: ``url`` (glob), ``title`` (contains), ``console`` (a console message\nmatching this regex appears), ``no_console`` (no message matching this regex since the\nfeature started), ``js`` (expression or function, possibly async, becomes truthy).",
+      "properties": {
+        "target": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Target"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "visible": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Visible"
+        },
+        "text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Text"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Value"
+        },
+        "number": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Number"
+        },
+        "tolerance": {
+          "default": 0.001,
+          "minimum": 0,
+          "title": "Tolerance",
+          "type": "number"
+        },
+        "count": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Count"
+        },
+        "enabled": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Enabled"
+        },
+        "checked": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Checked"
+        },
+        "rendered": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rendered"
+        },
+        "animated": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Animated"
+        },
+        "dominant_color": {
+          "anyOf": [
+            {
+              "pattern": "^(#[0-9A-Fa-f]{6}|\\$\\{[^}]+\\})$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Dominant Color"
+        },
+        "color_tolerance": {
+          "default": 12,
+          "maximum": 255,
+          "minimum": 0,
+          "title": "Color Tolerance",
+          "type": "integer"
+        },
+        "url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Url"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        },
+        "console": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Console"
+        },
+        "no_console": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "No Console"
+        },
+        "js": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Js"
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timeout"
+        }
+      },
+      "title": "Expectation",
+      "type": "object"
+    },
+    "Feature": {
+      "additionalProperties": false,
+      "description": "A user-facing feature, checked by its ``steps``.\n\n``depends_on`` lists features declared earlier: if one did not pass, this one is skipped.\n``cleanup`` steps undo what the feature created; they run at the end of the run, in reverse\norder of the features, even when something failed. ``teardown`` steps run right after the\nfeature, whether it passed or failed, to put the page back in a state the next features can\nwork from (close a dialog, stop the game); a failing teardown fails a feature that had\npassed. ``mutating`` marks a feature that writes\nto production (``--safe-only`` leaves it out). ``requires_webgpu`` marks it ``blocked``\nrather than failed when the browser has no WebGPU adapter.",
+      "properties": {
+        "id": {
+          "pattern": "^[A-Za-z0-9][\\w.-]*$",
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "tags": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Tags",
+          "type": "array"
+        },
+        "depends_on": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Depends On",
+          "type": "array"
+        },
+        "mutating": {
+          "default": false,
+          "title": "Mutating",
+          "type": "boolean"
+        },
+        "requires_webgpu": {
+          "default": false,
+          "title": "Requires Webgpu",
+          "type": "boolean"
+        },
+        "steps": {
+          "items": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/GotoStep"
+              },
+              {
+                "$ref": "#/$defs/ClickStep"
+              },
+              {
+                "$ref": "#/$defs/SelectStep"
+              },
+              {
+                "$ref": "#/$defs/HoverStep"
+              },
+              {
+                "$ref": "#/$defs/FillStep"
+              },
+              {
+                "$ref": "#/$defs/PressStep"
+              },
+              {
+                "$ref": "#/$defs/UploadStep"
+              },
+              {
+                "$ref": "#/$defs/DragStep"
+              },
+              {
+                "$ref": "#/$defs/ChooseStep"
+              },
+              {
+                "$ref": "#/$defs/WaitStep"
+              },
+              {
+                "$ref": "#/$defs/ReloadStep"
+              },
+              {
+                "$ref": "#/$defs/ScreenshotStep"
+              },
+              {
+                "$ref": "#/$defs/StoreStep"
+              },
+              {
+                "$ref": "#/$defs/ExpectStep"
+              }
+            ]
+          },
+          "minItems": 1,
+          "title": "Steps",
+          "type": "array"
+        },
+        "teardown": {
+          "default": [],
+          "items": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/GotoStep"
+              },
+              {
+                "$ref": "#/$defs/ClickStep"
+              },
+              {
+                "$ref": "#/$defs/SelectStep"
+              },
+              {
+                "$ref": "#/$defs/HoverStep"
+              },
+              {
+                "$ref": "#/$defs/FillStep"
+              },
+              {
+                "$ref": "#/$defs/PressStep"
+              },
+              {
+                "$ref": "#/$defs/UploadStep"
+              },
+              {
+                "$ref": "#/$defs/DragStep"
+              },
+              {
+                "$ref": "#/$defs/ChooseStep"
+              },
+              {
+                "$ref": "#/$defs/WaitStep"
+              },
+              {
+                "$ref": "#/$defs/ReloadStep"
+              },
+              {
+                "$ref": "#/$defs/ScreenshotStep"
+              },
+              {
+                "$ref": "#/$defs/StoreStep"
+              },
+              {
+                "$ref": "#/$defs/ExpectStep"
+              }
+            ]
+          },
+          "title": "Teardown",
+          "type": "array"
+        },
+        "cleanup": {
+          "default": [],
+          "items": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/GotoStep"
+              },
+              {
+                "$ref": "#/$defs/ClickStep"
+              },
+              {
+                "$ref": "#/$defs/SelectStep"
+              },
+              {
+                "$ref": "#/$defs/HoverStep"
+              },
+              {
+                "$ref": "#/$defs/FillStep"
+              },
+              {
+                "$ref": "#/$defs/PressStep"
+              },
+              {
+                "$ref": "#/$defs/UploadStep"
+              },
+              {
+                "$ref": "#/$defs/DragStep"
+              },
+              {
+                "$ref": "#/$defs/ChooseStep"
+              },
+              {
+                "$ref": "#/$defs/WaitStep"
+              },
+              {
+                "$ref": "#/$defs/ReloadStep"
+              },
+              {
+                "$ref": "#/$defs/ScreenshotStep"
+              },
+              {
+                "$ref": "#/$defs/StoreStep"
+              },
+              {
+                "$ref": "#/$defs/ExpectStep"
+              }
+            ]
+          },
+          "title": "Cleanup",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "steps"
+      ],
+      "title": "Feature",
+      "type": "object"
+    },
+    "FillStep": {
+      "additionalProperties": false,
+      "description": "Replace a field's content with ``value``.",
+      "properties": {
+        "fill": {
+          "$ref": "#/$defs/Target"
+        },
+        "value": {
+          "title": "Value",
+          "type": "string"
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timeout"
+        }
+      },
+      "required": [
+        "fill",
+        "value"
+      ],
+      "title": "FillStep",
+      "type": "object"
+    },
+    "GotoStep": {
+      "additionalProperties": false,
+      "description": "Open a URL. ``${base.editor}/`` resolves against the suite's ``base_urls``.",
+      "properties": {
+        "goto": {
+          "title": "Goto",
+          "type": "string"
+        },
+        "expect_response": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ResponseMatch"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "goto"
+      ],
+      "title": "GotoStep",
+      "type": "object"
+    },
+    "HoverStep": {
+      "additionalProperties": false,
+      "properties": {
+        "hover": {
+          "$ref": "#/$defs/Target"
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timeout"
+        }
+      },
+      "required": [
+        "hover"
+      ],
+      "title": "HoverStep",
+      "type": "object"
+    },
+    "Point": {
+      "additionalProperties": false,
+      "description": "A position in pixels from an element's top-left corner.",
+      "properties": {
+        "x": {
+          "title": "X",
+          "type": "number"
+        },
+        "y": {
+          "title": "Y",
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y"
+      ],
+      "title": "Point",
+      "type": "object"
+    },
+    "PressStep": {
+      "additionalProperties": false,
+      "description": "Press a key (``Enter``, ``Delete``, ``Control+Z``) on ``target``, or on whatever has focus.\n\n(Not ``on``: YAML 1.1 reads a bare ``on`` key as the boolean true.)",
+      "properties": {
+        "press": {
+          "title": "Press",
+          "type": "string"
+        },
+        "target": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Target"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "press"
+      ],
+      "title": "PressStep",
+      "type": "object"
+    },
+    "ReloadStep": {
+      "additionalProperties": false,
+      "properties": {
+        "reload": {
+          "const": true,
+          "title": "Reload",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "reload"
+      ],
+      "title": "ReloadStep",
+      "type": "object"
+    },
+    "ResponseMatch": {
+      "additionalProperties": false,
+      "description": "A network response the action must trigger. ``url`` is a glob (``*`` and ``**`` match anything).",
+      "properties": {
+        "url": {
+          "title": "Url",
+          "type": "string"
+        },
+        "method": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Method"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            }
+          ],
+          "default": "2xx",
+          "title": "Status"
+        },
+        "timeout": {
+          "default": 30.0,
+          "title": "Timeout",
+          "type": "number"
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "title": "ResponseMatch",
+      "type": "object"
+    },
+    "ScreenshotStep": {
+      "additionalProperties": false,
+      "description": "Save a screenshot named ``screenshot`` (of the page, or only of ``of``) into the run's folder.",
+      "properties": {
+        "screenshot": {
+          "pattern": "^[\\w.-]+$",
+          "title": "Screenshot",
+          "type": "string"
+        },
+        "of": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Target"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "screenshot"
+      ],
+      "title": "ScreenshotStep",
+      "type": "object"
+    },
+    "SelectStep": {
+      "additionalProperties": false,
+      "description": "Make sure ``select`` is selected: click it only if it isn't (``aria-selected`` / checked).\n\nFor rows that toggle on click, such as tree items: a plain click on a selected row would\ndeselect it.",
+      "properties": {
+        "select": {
+          "$ref": "#/$defs/Target"
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timeout"
+        }
+      },
+      "required": [
+        "select"
+      ],
+      "title": "SelectStep",
+      "type": "object"
+    },
+    "StoreStep": {
+      "additionalProperties": false,
+      "description": "Remember a value as ``${var.<store>}``.\n\nSources: group 1 of ``url_pattern`` on the URL, a target's text (``text_of``), or the result\nof a JavaScript expression run in the page (``js``; it may return a promise, e.g. a fetch).",
+      "properties": {
+        "store": {
+          "pattern": "^[A-Za-z_][\\w-]*$",
+          "title": "Store",
+          "type": "string"
+        },
+        "url_pattern": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Url Pattern"
+        },
+        "text_of": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Target"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "js": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Js"
+        }
+      },
+      "required": [
+        "store"
+      ],
+      "title": "StoreStep",
+      "type": "object"
+    },
+    "Target": {
+      "additionalProperties": false,
+      "description": "What to act on. Exactly one base selector, optionally narrowed.\n\nBases, in order of preference: ``testid`` (data-testid), ``role`` (+ ``name``), ``label``,\n``text``, ``placeholder``, ``title``, ``id``, ``css``. Narrowing: ``within`` (search inside\nanother target), ``has_text`` / ``has`` (keep matches containing that text or target) and\n``nth`` (``first``, ``last`` or an index; without it, several matches is an error).\n``frame`` is the CSS selector of an iframe to search in (e.g. a Stripe payment form); it\napplies before ``within``.",
+      "properties": {
+        "frame": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Frame"
+        },
+        "testid": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Testid"
+        },
+        "role": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Role"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Name"
+        },
+        "exact": {
+          "default": false,
+          "title": "Exact",
+          "type": "boolean"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Label"
+        },
+        "text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Text"
+        },
+        "placeholder": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Placeholder"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        },
+        "id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Id"
+        },
+        "css": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Css"
+        },
+        "has_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Has Text"
+        },
+        "has": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Target"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "within": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Target"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "nth": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "enum": [
+                "first",
+                "last"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Nth"
+        }
+      },
+      "title": "Target",
+      "type": "object"
+    },
+    "UploadStep": {
+      "additionalProperties": false,
+      "description": "Put files into an ``<input type=file>``. Paths are relative to the scenario file.",
+      "properties": {
+        "upload": {
+          "$ref": "#/$defs/Target"
+        },
+        "files": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Files",
+          "type": "array"
+        }
+      },
+      "required": [
+        "upload",
+        "files"
+      ],
+      "title": "UploadStep",
+      "type": "object"
+    },
+    "WaitStep": {
+      "additionalProperties": false,
+      "description": "A fixed pause. Prefer an ``expect``, which waits only as long as needed.",
+      "properties": {
+        "wait": {
+          "title": "Wait",
+          "type": "number"
+        }
+      },
+      "required": [
+        "wait"
+      ],
+      "title": "WaitStep",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "A scenario file. ``base_urls`` are reachable as ``${base.<name>}``, ``vars`` as ``${var.<name>}``.\n\n``locale`` (e.g. ``fr-FR``) fixes the browser language, so text selectors don't change with\nthe machine running the suite (the launcher and Stripe follow the browser's language).\n\n``ignore_console`` hides matching console errors from the report. ``fail_on_console`` fails\na feature whose steps all passed when one of its console errors matches, whenever it\nappeared during the feature (a wasm panic can land after the step that would have caught it).",
+  "properties": {
+    "suite": {
+      "title": "Suite",
+      "type": "string"
+    },
+    "description": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Description"
+    },
+    "base_urls": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "default": {},
+      "title": "Base Urls",
+      "type": "object"
+    },
+    "vars": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "default": {},
+      "title": "Vars",
+      "type": "object"
+    },
+    "locale": {
+      "anyOf": [
+        {
+          "pattern": "^[a-z]{2}(-[A-Z]{2})?$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Locale"
+    },
+    "timeout": {
+      "default": 15.0,
+      "title": "Timeout",
+      "type": "number"
+    },
+    "dialogs": {
+      "default": "accept",
+      "enum": [
+        "accept",
+        "dismiss"
+      ],
+      "title": "Dialogs",
+      "type": "string"
+    },
+    "ignore_console": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Ignore Console",
+      "type": "array"
+    },
+    "fail_on_console": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Fail On Console",
+      "type": "array"
+    },
+    "features": {
+      "items": {
+        "$ref": "#/$defs/Feature"
+      },
+      "minItems": 1,
+      "title": "Features",
+      "type": "array"
+    }
+  },
+  "required": [
+    "suite",
+    "features"
+  ],
+  "title": "Suite",
+  "type": "object"
+}

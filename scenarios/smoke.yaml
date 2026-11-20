@@ -1,0 +1,66 @@
+# yaml-language-server: $schema=./horizon-analyzer.schema.json
+#
+# ╔══════════════════════════════════════════════════════════════════════════════════════════╗
+# ║  Smoke : la prod répond, en 2 secondes, sans rien écrire                                 ║
+# ╚══════════════════════════════════════════════════════════════════════════════════════════╝
+#
+# Vérification rapide des trois surfaces et de la connexion. Rien n'est créé ni modifié, et rien
+# n'a besoin de GPU : c'est le fichier qui tourne toutes les heures en CI, en headless.
+#
+#   Lancer :   horizon-analyzer run scenarios/smoke.yaml --headless
+#   Doc :      docs/scenarios.md
+
+suite: horizon-prod-smoke
+base_urls:
+  site: https://play-horizon.games
+  launcher: https://play.play-horizon.games
+  editor: https://editor.play-horizon.games
+timeout: 15s
+
+features:
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # SITE · Le site vitrine s'affiche
+  #   Teste     : https://play-horizon.games (attention au tiret : playhorizon.games est un
+  #               domaine parqué).
+  #   Vérifie   : le titre de la page contient « Horizon » et aucune erreur JavaScript.
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: SITE-home
+    name: Le site vitrine s'affiche
+    tags: [smoke]
+    steps:
+      - goto: ${base.site}/
+      - expect: { title: Horizon }
+      - expect: { no_console: "^\\[(error|pageerror)\\]" }
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # LAUNCHER · Le launcher propose la connexion
+  #   Teste     : le launcher sans session.
+  #   Vérifie   : il redirige vers /login et le champ Email est affiché.
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: LAUNCHER-login-page
+    name: Le launcher propose la connexion
+    tags: [smoke]
+    steps:
+      - goto: ${base.launcher}/
+      - expect: { url: "**/login" }
+      - expect: { target: { label: Email }, visible: true }
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F1 · Connexion à l'éditeur
+  #   Teste     : la connexion de bout en bout (front, gateway, auth-service, base).
+  #   Vérifie   : POST /login 2xx, puis l'accueil « Welcome back » et le bouton « Create New
+  #               Game ». Une seule connexion par run, pour rester sous le rate limit du gateway.
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F1-login
+    name: Connexion à l'éditeur avec le compte de test
+    tags: [smoke, auth]
+    steps:
+      - goto: ${base.editor}/
+      - fill: { label: Email }
+        value: ${env.HORIZON_EMAIL}
+      - fill: { label: Password, exact: true }
+        value: ${env.HORIZON_PASSWORD}
+      - click: { role: button, name: Sign In }
+        expect_response: { url: "**/login", method: POST, status: 2xx }
+      - expect: { target: { role: heading, name: Welcome back }, visible: true }
+      - expect: { target: { role: button, name: Create New Game, nth: first }, visible: true }

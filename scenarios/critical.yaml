@@ -1,0 +1,497 @@
+# yaml-language-server: $schema=./horizon-analyzer.schema.json
+#
+# ╔══════════════════════════════════════════════════════════════════════════════════════════╗
+# ║  Parcours critique d'Horizon en production, du créateur au joueur                        ║
+# ╚══════════════════════════════════════════════════════════════════════════════════════════╝
+#
+#   Créateur : connexion -> projet -> viewport 3D -> import d'un modèle -> transformations
+#              -> lumière, caméra, primitives -> undo/redo -> lancer le jeu dans l'éditeur
+#              -> publier le jeu (payant, 10 pièces)
+#   Joueur   : connexion au launcher -> acheter des pièces (Stripe, carte de test)
+#              -> débloquer le jeu avec ses pièces -> le lancer et vérifier qu'il s'affiche
+#
+#   Lancer :   horizon-analyzer run scenarios/critical.yaml        (navigateur visible, GPU)
+#   Doc :      docs/scenarios.md (chaque feature expliquée, comment lire le rapport)
+#
+# Les identifiants F* reprennent ceux du beta test plan (beta_test_plan.md) ; EDITOR-* et
+# LAUNCHER-* sont des vérifications en plus. Les features tournent dans l'ordre du fichier, sur
+# la même page : la connexion de F1 sert aux suivantes. Si une feature échoue, celles qui en
+# dépendent (depends_on) sont sautées, les autres continuent.
+#
+# Tout ce qui est créé porte le nom e2e-<run id> ; le jeu est dépublié et le projet supprimé en
+# fin de run (cleanup), même après un échec. Stripe est en mode test : la carte 4242... ne débite
+# rien.
+
+suite: horizon-prod-critical
+description: Du créateur au joueur - édition 3D, lancement du jeu, publication, paiement Stripe, achat et jeu.
+base_urls:
+  editor: https://editor.play-horizon.games
+  launcher: https://play.play-horizon.games
+  api: https://api.play-horizon.games
+locale: fr-FR             # le launcher et Stripe suivent la langue du navigateur
+timeout: 15s              # attente maximale par défaut de chaque étape
+dialogs: accept            # la suppression de projet passe par un confirm()
+ignore_console:
+  - "GPU stall due to ReadPixels"   # avertissement du gizmo three.js, sans conséquence
+fail_on_console:
+  - "panicked at"            # le wasm Bevy a planté : le viewport ou le jeu est mort
+  - "^\\[pageerror\\]"       # exception JavaScript non rattrapée
+
+features:
+  # ════════════════════════════════════════════════════════════════════════════ CRÉATEUR
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F1 · Connexion à l'éditeur
+  #   Teste     : le formulaire de connexion de l'éditeur avec le compte de test.
+  #   Vérifie   : POST /login répond 2xx, puis l'accueil affiche « Welcome back ».
+  #   Données   : HORIZON_EMAIL et HORIZON_PASSWORD viennent de .env (masqués dans le rapport).
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F1-login
+    name: Connexion à l'éditeur avec le compte de test
+    tags: [critical, smoke, auth]
+    steps:
+      - goto: ${base.editor}/
+      - fill: { label: Email }
+        value: ${env.HORIZON_EMAIL}
+      - fill: { label: Password, exact: true }
+        value: ${env.HORIZON_PASSWORD}
+      - click: { role: button, name: Sign In }
+        expect_response: { url: "**/login", method: POST, status: 2xx }
+      - expect: { target: { role: heading, name: Welcome back }, visible: true }
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F4 · Créer un projet de jeu
+  #   Teste     : « Create New Game » crée une room et ouvre l'éditeur dessus.
+  #   Vérifie   : POST /room répond 201, puis l'URL devient /editor?id=<projet>.
+  #   Écrit     : un projet e2e-<run id>. Nettoyage : supprimé en fin de run (bouton
+  #               « Delete Project » de sa carte, confirm() accepté), puis on vérifie qu'il a
+  #               disparu de la liste.
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F4-create-project
+    name: Créer un projet de jeu
+    tags: [critical, editor]
+    mutating: true
+    depends_on: [F1-login]
+    steps:
+      - click: { role: button, name: Create New Game, nth: first }
+      - fill: { id: modal-game-name }
+        value: e2e-${run.id}
+      - click: { role: button, name: Create Game }
+        expect_response: { url: "**/room", method: POST, status: 201 }
+      - expect: { url: "**/editor?id=*", timeout: 20s }
+      - store: project_id
+        url_pattern: "id=([0-9a-f]+)"
+    cleanup:
+      - goto: ${base.editor}/
+      - hover: { role: heading, name: "e2e-${run.id}", exact: true }
+      - click: { title: Delete Project, within: &project_card { css: div.group, has: { role: heading, name: "e2e-${run.id}", exact: true }, nth: first } }
+      - expect: { target: { role: heading, name: "e2e-${run.id}", exact: true }, count: 0 }
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # EDITOR · Le viewport 3D démarre
+  #   Teste     : le moteur Bevy (wasm) démarre et dessine la scène dans le canvas.
+  #   Vérifie   : Bevy logue « backend: BrowserWebGpu », aucun panic pendant 3 s, et le canvas
+  #               n'est pas une image unie (la grille est dessinée).
+  #   Bloquée   : si le navigateur n'a pas de WebGPU (statut « Bloqué », pas « Échec ») : il
+  #               n'y a pas de repli WebGL2. En headless, Bevy plante : cette feature échoue.
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: EDITOR-viewport
+    name: Le viewport 3D démarre (Bevy sur WebGPU)
+    tags: [critical, 3d]
+    depends_on: [F4-create-project]
+    requires_webgpu: true
+    steps:
+      - expect: { target: { id: scene-view-canvas }, visible: true }
+      # 60 s : le moteur wasm pèse lourd ; sur une connexion lente il met plus de 30 s à arriver.
+      - expect: { console: "backend: BrowserWebGpu", timeout: 60s }
+      # Laisse à un plantage au démarrage le temps d'apparaître ici (fail_on_console),
+      # plutôt que dans la feature suivante.
+      - wait: 3s
+      - expect: { target: { id: scene-view-canvas }, rendered: true }
+      - screenshot: empty-scene
+        of: { id: scene-view-canvas }
+      - wait: 2s                 # laisse voir la scène chargée avant de la modifier
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F5 · Importer un modèle 3D (.glb)
+  #   Teste     : Assets > « Import assets » > choix du fichier > « Import model ».
+  #   Vérifie   : la requête /catalog/<projet>/lookup répond 2xx, puis l'asset « e2e-cube »
+  #               apparaît dans « My Assets ».
+  #   Fichier   : fixtures/e2e-cube.glb (cube de 1 m, régénéré par scripts/make_cube_glb.py).
+  #               L'asset prend le nom du mesh du glTF (« e2e-cube »), pas celui du fichier.
+  #   Écrit     : un asset privé au projet (supprimé avec le projet).
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F5-import-mesh
+    name: Importer un modèle 3D (.glb)
+    tags: [critical, 3d, assets]
+    mutating: true
+    depends_on: [EDITOR-viewport]
+    steps:
+      - click: { role: tab, name: Assets }
+      - click: { role: button, name: Import assets }
+      - upload: { css: "input[type=file][accept*='.glb']" }
+        files: [fixtures/e2e-cube.glb]
+      # L'import est dédupliqué par hash : le front demande d'abord /catalog/<projet>/lookup,
+      # et n'envoie /convert que pour un fichier jamais vu. Le lookup, lui, part à chaque import.
+      - click: { role: button, name: Import model }
+        expect_response: { url: "**/catalog/*/lookup", method: POST, status: 2xx, timeout: 30s }
+      - click: { id: tab-mine }
+      - expect: { target: { role: listitem, has_text: e2e-cube }, visible: true, timeout: 30s }
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F8 · Placer le modèle dans la scène et le déplacer
+  #   Teste     : glisser l'asset sur le viewport crée un objet ; l'Inspector le déplace.
+  #   Vérifie   : un objet (« Object ») apparaît dans la hiérarchie ; position X = 5 dans la
+  #               carte Transform.
+  #   Capture   : screenshots/F8-place-and-move-moved.png (le cube sur l'axe X rouge).
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F8-place-and-move
+    name: Placer le modèle dans la scène et le déplacer
+    tags: [critical, 3d, transform]
+    mutating: true
+    depends_on: [F5-import-mesh]
+    steps:
+      # Glisser depuis "My Assets" crée un objet dans la scène.
+      - drag: { role: listitem, has_text: e2e-cube }
+        to: { id: scene-view-canvas }
+      - click: { role: tab, name: Hierarchy }
+      - expect: { target: { role: treeitem, within: &hierarchy { css: "[data-slot=hierarchy-view]" } }, count: 1, timeout: 20s }
+      - select: { role: treeitem, within: *hierarchy, nth: first }
+      # La carte Transform de l'Inspector : position X.
+      - fill: &position_x { role: spinbutton, name: X, within: &position { css: div.flex-col, has: { css: ":scope > span", has_text: position }, nth: last } }
+        value: "5"
+      - press: Enter
+        target: *position_x
+      - expect: { target: *position_x, value: "5" }
+      - screenshot: moved
+        of: { id: scene-view-canvas }
+      - wait: 2s                 # laisse voir le modèle posé et déplacé
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F8 · Tourner et redimensionner le modèle
+  #   Teste     : les champs rotation et scale de la carte Transform.
+  #   Vérifie   : rotation Y = 45 et scale X = 2 sont acceptés et relus dans l'Inspector.
+  #   Note      : « select » ne clique que si l'objet n'est pas déjà sélectionné ; un clic sur
+  #               une ligne sélectionnée de la hiérarchie la désélectionnerait.
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F8-rotate-scale
+    name: Tourner et redimensionner le modèle
+    tags: [critical, 3d, transform]
+    mutating: true
+    depends_on: [F8-place-and-move]
+    steps:
+      - select: { role: treeitem, within: *hierarchy, has_text: Object }
+      - fill: &rotation_y { role: spinbutton, name: Y, within: { css: div.flex-col, has: { css: ":scope > span", has_text: rotation }, nth: last } }
+        value: "45"
+      - press: Enter
+        target: *rotation_y
+      # number + tolérance : Horizon stocke la rotation en quaternion et la réaffiche en
+      # 45.000004 (arrondi flottant) : une comparaison exacte à "45" échouerait au hasard.
+      - expect: { target: *rotation_y, number: 45, tolerance: 0.01 }
+      - fill: &scale_x { role: spinbutton, name: X, within: { css: div.flex-col, has: { css: ":scope > span", has_text: scale }, nth: last } }
+        value: "2"
+      - press: Enter
+        target: *scale_x
+      - expect: { target: *scale_x, value: "2" }
+      - screenshot: rotated-scaled
+        of: { id: scene-view-canvas }
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # EDITOR · Annuler puis rétablir
+  #   Teste     : les boutons Undo et Redo de la barre d'outils (historique du CRDT).
+  #   Vérifie   : scale X passe de 2 à 3 ; Undo le ramène à 2 ; Redo le remet à 3.
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: EDITOR-undo-redo
+    name: Annuler puis rétablir une modification
+    tags: [critical, editor]
+    mutating: true
+    depends_on: [F8-rotate-scale]
+    steps:
+      - fill: *scale_x
+        value: "3"
+      - press: Enter
+        target: *scale_x
+      - expect: { target: *scale_x, value: "3" }
+      - click: { role: button, name: Undo, exact: true }
+      - expect: { target: *scale_x, value: "2" }
+      - click: { role: button, name: Redo, exact: true }
+      - expect: { target: *scale_x, value: "3" }
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F7 · Ajouter une lumière directionnelle
+  #   Teste     : clic droit dans la hiérarchie > Create Object > Directional Light.
+  #   Vérifie   : une ligne « DirectionalLight » apparaît dans la hiérarchie.
+  #   Pourquoi  : sans lumière, le jeu lancé plus loin afficherait un cube noir.
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F7-add-light
+    name: Ajouter une lumière directionnelle
+    tags: [critical, 3d, lighting]
+    mutating: true
+    depends_on: [F8-place-and-move]
+    steps:
+      # Clic droit dans la hiérarchie, sous les objets : menu "Create Object".
+      - click: &tree_blank { css: "[data-slot=hierarchy-view]" }
+        button: right
+        position: { x: 100, y: 300 }
+      - click: { role: menuitem, name: Directional Light, exact: true }
+      - expect: { target: { role: treeitem, within: *hierarchy, has_text: DirectionalLight }, count: 1 }
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # EDITOR · Ajouter une caméra et la placer
+  #   Teste     : clic droit > Create Object > Camera, puis position dans l'Inspector.
+  #   Vérifie   : la caméra est créée et sa position Z vaut 6.
+  #   Pourquoi  : une caméra ajoutée est à l'origine, au milieu des objets : le jeu montrerait
+  #               un fond uni. En (0, 1, 6), elle regarde la scène et cadre le cube.
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: EDITOR-add-camera
+    name: Ajouter une caméra et la placer devant la scène
+    tags: [critical, 3d]
+    mutating: true
+    depends_on: [F8-place-and-move]
+    steps:
+      - click: *tree_blank
+        button: right
+        position: { x: 100, y: 300 }
+      - click: { role: menuitem, name: Camera, exact: true }
+      - select: { role: treeitem, within: *hierarchy, has_text: Camera }
+      # Sans recul, la caméra est à l'origine, dans les objets : le jeu n'afficherait rien.
+      - fill: &position_y { role: spinbutton, name: Y, within: *position }
+        value: "1"
+      - press: Enter
+        target: *position_y
+      - fill: &position_z { role: spinbutton, name: Z, within: *position }
+        value: "6"
+      - press: Enter
+        target: *position_z
+      - expect: { target: *position_z, value: "6" }
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # EDITOR · Créer, dupliquer et supprimer une primitive
+  #   Teste     : le menu contextuel de la hiérarchie : Create Object > Cube, Duplicate, Delete.
+  #   Vérifie   : 1 ligne « Cube », puis 2 après Duplicate, puis 1 après Delete de la copie.
+  #   Pourquoi  : ce cube, à l'origine, est l'objet que la caméra cadre quand on lance le jeu.
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: EDITOR-primitives
+    name: Créer, dupliquer et supprimer une primitive
+    tags: [critical, 3d]
+    mutating: true
+    depends_on: [F8-place-and-move]
+    steps:
+      - click: *tree_blank
+        button: right
+        position: { x: 100, y: 300 }
+      - click: { role: menuitem, name: Cube, exact: true }
+      - expect: { target: &cube_rows { role: treeitem, within: *hierarchy, has_text: Cube }, count: 1, timeout: 20s }
+      - click: { role: treeitem, within: *hierarchy, has_text: Cube }
+        button: right
+      - click: { role: menuitem, name: Duplicate, exact: true }
+      - expect: { target: *cube_rows, count: 2 }
+      - click: { role: treeitem, within: *hierarchy, has_text: Cube, nth: last }
+        button: right
+      - click: { role: menuitem, name: Delete, exact: true }
+      - expect: { target: *cube_rows, count: 1 }
+      - wait: 2s                 # laisse voir la scène complète : modèle, lumière, caméra, cube
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # EDITOR · Changer d'outil de transformation
+  #   Teste     : les trois outils du gizmo dans la barre d'outils (rotation, échelle, translation).
+  #   Vérifie   : chaque outil cliqué devient l'outil coché ; on finit sur translation.
+  #   N'écrit rien en prod (l'outil choisi est rangé dans le localStorage du navigateur).
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: EDITOR-gizmo-tools
+    name: Changer d'outil de transformation (rotation, échelle, translation)
+    tags: [editor]
+    depends_on: [EDITOR-viewport]
+    steps:
+      - click: { css: "label:has(input[value=rotate])" }
+      - expect: { target: { css: "input[value=rotate]" }, checked: true }
+      - click: { css: "label:has(input[value=scale])" }
+      - expect: { target: { css: "input[value=scale]" }, checked: true }
+      - click: { css: "label:has(input[value=translate])" }
+      - expect: { target: { css: "input[value=translate]" }, checked: true }
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F17 · Lancer le jeu dans l'éditeur et vérifier qu'il s'affiche
+  #   Teste     : Start lance le jeu dans l'onglet Game, puis Pause, Resume et Stop.
+  #   Vérifie   : le bouton Stop apparaît (le jeu a fini de charger) ; le canvas du jeu dessine
+  #               quelque chose (au moins 0,5 % de ses pixels diffèrent du fond) : le cube
+  #               éclairé, vu par la caméra ; Pause devient Resume ; Stop arrête le jeu.
+  #   Capture   : screenshots/F17-play-in-editor-game-in-editor.png.
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F17-play-in-editor
+    name: Lancer le jeu dans l'éditeur et vérifier qu'il s'affiche
+    tags: [critical, 3d, play]
+    depends_on: [EDITOR-add-camera, F7-add-light, EDITOR-primitives]
+    steps:
+      - click: { role: button, name: Play, exact: true }
+      # Stop n'apparaît qu'une fois le jeu prêt (fin de son écran de chargement).
+      # 60 s : le jeu se télécharge au premier lancement, long sur une connexion lente.
+      - expect: { target: &stop { role: button, name: Stop, exact: true }, visible: true, timeout: 60s }
+      - expect: { target: { id: game-view-canvas }, rendered: true, timeout: 20s }
+      - screenshot: game-in-editor
+        of: { id: game-view-canvas }
+      - wait: 3s                 # laisse voir le jeu tourner avant Pause et Stop
+      - click: { role: button, name: Pause, exact: true }
+      - expect: { target: { role: button, name: Resume, exact: true }, visible: true }
+      - click: { role: button, name: Resume, exact: true }
+      - click: *stop
+      # Arrêté, les boutons de jeu restent dans le DOM mais leur bloc passe en pointer-events-none.
+      - expect: { target: { css: "div.pointer-events-none:has(> button[aria-label=Stop])" }, count: 1 }
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F15 · Publier le jeu
+  #   Teste     : sur l'accueil de l'éditeur, « Publish » de la carte du projet, avec une
+  #               description et un prix de 10 pièces.
+  #   Vérifie   : la modale affiche « Congratulations! », puis la carte porte « PUBLISHED ».
+  #   Écrit     : un jeu public dans le store, visible de tous pendant la durée du run.
+  #               Nettoyage : « Edit » > « Unpublish Game » en fin de run (avant la suppression
+  #               du projet).
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F15-publish
+    name: Publier le jeu (payant, 10 pièces)
+    tags: [critical, publish]
+    mutating: true
+    depends_on: [EDITOR-add-camera, EDITOR-primitives]
+    steps:
+      - goto: ${base.editor}/
+      - click: { role: button, name: Publish, exact: true, within: *project_card }
+      - fill: { id: publish-desc }
+        value: Jeu de test automatique, supprimé à la fin du run.
+      - fill: { id: publish-price }
+        value: "10"
+      - click: { role: button, name: Publish Game }
+      - expect: { target: { role: heading, name: Congratulations! }, visible: true, timeout: 30s }
+      - click: { role: button, name: Back to dashboard }
+      - expect: { target: { text: PUBLISHED, within: *project_card }, visible: true }
+    cleanup:
+      - goto: ${base.editor}/
+      - click: { role: button, name: Edit, exact: true, within: *project_card }
+      - click: { role: button, name: Unpublish Game }
+      - expect: { target: { role: heading, name: Game Unpublished }, visible: true, timeout: 30s }
+
+  # ════════════════════════════════════════════════════════════════════════════ JOUEUR
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # LAUNCHER · Connexion au launcher
+  #   Teste     : le launcher a sa propre connexion (même compte), séparée de l'éditeur.
+  #   Vérifie   : sans session, le launcher renvoie sur /login ; après connexion (POST /login
+  #               2xx), la barre de recherche des jeux s'affiche.
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: LAUNCHER-login
+    name: Connexion au launcher
+    tags: [critical, auth, launcher]
+    steps:
+      - goto: ${base.launcher}/
+      - expect: { url: "**/login" }
+      - fill: { label: Email }
+        value: ${env.HORIZON_EMAIL}
+      - fill: { label: Password, exact: true }
+        value: ${env.HORIZON_PASSWORD}
+      - click: { role: button, name: Sign In }
+        expect_response: { url: "**/login", method: POST, status: 2xx }
+      - expect: { target: &search { placeholder: "Rechercher des jeux, créateurs, genres..." }, visible: true }
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F18 · Acheter des pièces par Stripe
+  #   Teste     : Boutique > Pack débutant (500 pièces, 4,99 €) > Payer > Stripe Checkout,
+  #               carte de test 4242 4242 4242 4242, 12/34, CVC 123.
+  #   Vérifie   : POST /payments/buy-coins 2xx ; la page Stripe affiche « Environnement de
+  #               test » (sinon on s'arrête avant de payer) ; retour sur /shop avec « Paiement
+  #               reçu » ; le solde lu sur /users/me a pris au moins 500 pièces (webhook Stripe).
+  #   Écrit     : +500 pièces de test sur le compte. Aucun argent réel : clé Stripe de test.
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F18-buy-coins
+    name: Acheter 500 pièces par Stripe (carte de test)
+    tags: [critical, payment]
+    mutating: true
+    depends_on: [LAUNCHER-login]
+    steps:
+      - goto: ${base.launcher}/shop
+      - store: coins_before
+        js: "() => fetch('${base.api}/users/me', { credentials: 'include' }).then(r => r.json()).then(u => u.money ?? 0)"
+      - click: { css: "label:has(input[name=pack][value='500'])" }
+      - click: { role: button, name: Payer }
+        expect_response: { url: "**/payments/buy-coins", method: POST, status: 2xx }
+      - expect: { url: "https://checkout.stripe.com/**", timeout: 30s }
+      # Garde-fou : on ne paie que si Stripe affiche son bandeau de mode test, jamais en live.
+      - expect: { target: { text: Environnement de test, nth: first }, visible: true, timeout: 30s }
+      # Le formulaire de paiement est dans une iframe Stripe Elements.
+      - fill: { frame: &stripe "iframe[src*='js.stripe.com/v3/elements-inner']:visible", id: linkAuthentication-emailInput }
+        value: ${env.HORIZON_EMAIL}
+      - click: { frame: *stripe, role: button, name: Carte bancaire }
+      - fill: { frame: *stripe, id: payment-numberInput }
+        value: "4242424242424242"
+      - fill: { frame: *stripe, id: payment-expiryInput }
+        value: "1234"
+      - fill: { frame: *stripe, id: payment-cvcInput }
+        value: "123"
+      - fill: &card_name { frame: *stripe, id: payment-nameInput }
+        value: E2E Horizon
+      # Entrée valide le formulaire, comme le bouton « Payer », sans viser une position à l'écran.
+      # La page Stripe bouge pendant qu'elle se met en place : un clic au mauvais moment tombait
+      # sur un lien juridique de Stripe (stripe.com/fr/legal/consumer), ouvert dans un nouvel
+      # onglet, et le paiement ne partait pas.
+      - press: Enter
+        target: *card_name
+      # Retour sur /shop?success=true, que l'app nettoie aussitôt en /shop : le bandeau fait foi.
+      - expect: { url: "${base.launcher}/shop*", timeout: 120s }
+      - expect: { target: { text: Paiement reçu }, visible: true, timeout: 30s }
+      # Le webhook Stripe crédite le compte : le solde doit avoir pris 500 pièces.
+      - expect:
+          js: "async () => ((await (await fetch('${base.api}/users/me', { credentials: 'include' })).json()).money ?? 0) >= ${var.coins_before} + 500"
+          timeout: 30s
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F18 · Débloquer le jeu avec des pièces
+  #   Teste     : retrouver le jeu publié par F15 dans le launcher et l'acheter.
+  #   Vérifie   : la recherche trouve « e2e-<run id> » ; sa fiche propose « Débloquer pour 10
+  #               pièces » ; POST /games/purchase 2xx ; le solde baisse exactement de 10 ;
+  #               le bouton « Jouer » apparaît.
+  #   Écrit     : -10 pièces de test ; le jeu reste dans « Jeux achetés » du compte de test.
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F18-unlock-game
+    name: Débloquer le jeu publié avec des pièces
+    tags: [critical, payment, launcher]
+    mutating: true
+    depends_on: [F15-publish, LAUNCHER-login]
+    steps:
+      - goto: ${base.launcher}/
+      - fill: *search
+        value: e2e-${run.id}
+      - click: { role: button, name: "e2e-${run.id}", exact: true, nth: first }
+      - expect: { target: &game_dialog { role: dialog }, visible: true }
+      - store: coins_before_unlock
+        js: "() => fetch('${base.api}/users/me', { credentials: 'include' }).then(r => r.json()).then(u => u.money ?? 0)"
+      - click: { role: button, name: Débloquer pour 10 pièces, within: *game_dialog }
+        expect_response: { url: "**/games/purchase", method: POST, status: 2xx }
+      - expect:
+          js: "async () => ((await (await fetch('${base.api}/users/me', { credentials: 'include' })).json()).money ?? 0) === ${var.coins_before_unlock} - 10"
+          timeout: 15s
+      - expect: { target: { role: button, name: Jouer, within: *game_dialog }, visible: true }
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F17 · Lancer le jeu depuis le launcher et vérifier qu'il s'affiche
+  #   Teste     : « Jouer » ouvre le jeu publié en plein écran (/play/<id>), comme un joueur.
+  #   Vérifie   : le titre de l'onglet est « e2e-<run id> en cours » ; le bouton « Quitter »
+  #               est là ; le canvas du jeu dessine le cube (pas une image unie) ; aucun panic
+  #               dans les 2 s qui suivent ; « Quitter » ramène à l'accueil du launcher.
+  #   Capture   : screenshots/F17-play-launcher-game-in-launcher.png.
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F17-play-launcher
+    name: Lancer le jeu depuis le launcher et vérifier qu'il s'affiche
+    tags: [critical, 3d, play, launcher]
+    depends_on: [F18-unlock-game]
+    requires_webgpu: true
+    steps:
+      - click: { role: button, name: Jouer, within: *game_dialog }
+      - expect: { url: "**/play/*", timeout: 20s }
+      - expect: { title: "e2e-${run.id} en cours" }
+      - expect: { target: { role: button, name: Quitter }, visible: true }
+      # 60 s : le jeu publié se télécharge en entier, long sur une connexion lente.
+      - expect: { target: { id: game-canvas }, rendered: true, timeout: 60s }
+      - screenshot: game-in-launcher
+        of: { id: game-canvas }
+      # Laisse voir le jeu ; un plantage juste après le démarrage échoue ici (fail_on_console).
+      - wait: 3s
+      - click: { role: button, name: Quitter }
+      - expect: { target: *search, visible: true, timeout: 20s }

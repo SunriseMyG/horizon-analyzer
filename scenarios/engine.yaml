@@ -1,0 +1,606 @@
+# yaml-language-server: $schema=./horizon-analyzer.schema.json
+#
+# ╔══════════════════════════════════════════════════════════════════════════════════════════╗
+# ║  Moteur Horizon : scripts no-code, lumière, ombres, reflets, fond, modèle importé        ║
+# ╚══════════════════════════════════════════════════════════════════════════════════════════╝
+#
+#   Construit une petite scène dans l'éditeur, puis la lance et vérifie qu'elle s'anime :
+#     - l'ange « cemetery_angel » (prefab glTF texturé, ~35 Mo) importé au centre ;
+#     - un cube doré (roughness 0,1) à sa droite, une sphère dorée très lisse (reflets) à sa
+#       gauche ;
+#     - un sol (cube aplati) qui reçoit les ombres de la lumière directionnelle ;
+#     - une caméra avec un fond bleu (clear_color) ;
+#     - deux scripts :
+#         · fait à la main dans l'éditeur de nœuds (On Every Frame → Rotate Y de 2°), attaché
+#           à l'ange et au cube : ils tournent sans arrêt ;
+#         · écrit par l'assistant IA à partir d'un prompt (flotter avec un sinus), attaché à
+#           la sphère : elle monte et descend.
+#
+#   Et deux cas qui ne fonctionnent pas dans Horizon. Ils sont écrits comme les autres (« ça
+#   doit marcher ») et sortent donc KO dans le rapport, avec la cause :
+#     - importer un modèle .glb corrompu : refusé (« Import failed ») ; l'ange s'importe
+#       normalement juste après ;
+#     - mettre une texture ordinaire en skybox : le jeu reste noir (WebGPU attend un cube) ;
+#       on retire la texture et on met une couleur de fond, qui s'affiche.
+#   Le run de cette suite finit donc avec 2 KO et un code de sortie 1 : c'est l'état attendu
+#   tant qu'Horizon ne gère pas ces cas. Leur « teardown » remet l'éditeur en ordre pour la
+#   suite.
+#
+#   Lancer :   horizon-analyzer run scenarios/engine.yaml        (navigateur visible, GPU)
+#   Doc :      docs/scenarios.md
+#
+# Indépendant de critical.yaml : il crée son propre projet e2e-<run id>, supprimé en fin de
+# run, et n'écrit rien d'autre en prod (pas de publication, pas de paiement). Toutes les
+# features tournent sur la même scène, sans rechargement de page.
+
+suite: horizon-prod-engine
+description: Scripts no-code, lumière et ombres, matériau brillant, fond de caméra et modèle importé, vérifiés en jeu.
+base_urls:
+  editor: https://editor.play-horizon.games
+locale: fr-FR
+timeout: 15s
+dialogs: accept
+ignore_console:
+  - "GPU stall due to ReadPixels"   # avertissement du gizmo three.js, sans conséquence
+fail_on_console:
+  - "panicked at"                   # le wasm Bevy a planté
+  - "^\\[pageerror\\]"              # exception JavaScript non rattrapée
+
+vars:
+  sky: "#3366CC"                    # couleur de fond choisie pour la caméra
+  gold: "#C9A227"                   # couleur du cube brillant
+
+features:
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # Connexion à l'éditeur (identique à critical.yaml)
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F1-login
+    name: Connexion à l'éditeur avec le compte de test
+    tags: [engine, auth]
+    steps:
+      - goto: ${base.editor}/
+      - fill: { label: Email }
+        value: ${env.HORIZON_EMAIL}
+      - fill: { label: Password, exact: true }
+        value: ${env.HORIZON_PASSWORD}
+      - click: { role: button, name: Sign In }
+        expect_response: { url: "**/login", method: POST, status: 2xx }
+      - expect: { target: { role: heading, name: Welcome back }, visible: true }
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # Créer le projet de la scène
+  #   Écrit     : un projet e2e-<run id>, supprimé en fin de run (cleanup), même après un échec.
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F4-create-project
+    name: Créer un projet de jeu
+    tags: [engine]
+    mutating: true
+    depends_on: [F1-login]
+    steps:
+      - click: { role: button, name: Create New Game, nth: first }
+      - fill: { id: modal-game-name }
+        value: e2e-${run.id}
+      - click: { role: button, name: Create Game }
+        expect_response: { url: "**/room", method: POST, status: 201 }
+      - expect: { url: "**/editor?id=*", timeout: 20s }
+    cleanup:
+      - goto: ${base.editor}/
+      - hover: { role: heading, name: "e2e-${run.id}", exact: true }
+      - click: { title: Delete Project, within: { css: div.group, has: { role: heading, name: "e2e-${run.id}", exact: true }, nth: first } }
+      - expect: { target: { role: heading, name: "e2e-${run.id}", exact: true }, count: 0 }
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # Le viewport 3D démarre
+  #   Vérifie   : Bevy logue son backend WebGPU, puis le canvas dessine la grille.
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: EDITOR-viewport
+    name: Le viewport 3D démarre (Bevy sur WebGPU)
+    tags: [engine, 3d]
+    depends_on: [F4-create-project]
+    requires_webgpu: true
+    steps:
+      - expect: { target: { id: scene-view-canvas }, visible: true }
+      # 60 s : le moteur wasm pèse lourd ; sur une connexion lente il met plus de 30 s à arriver.
+      - expect: { console: "backend: BrowserWebGpu", timeout: 60s }
+      - wait: 3s
+      - expect: { target: { id: scene-view-canvas }, rendered: true }
+      - wait: 2s                 # laisse voir la scène chargée
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # ENGINE · Importer un modèle 3D corrompu (KO attendu)
+  #   Teste     : l'import d'un .glb illisible (fixtures/broken-model.glb : un en-tête glTF
+  #               valide suivi d'un JSON coupé net, régénéré par scripts/make_broken_glb.py).
+  #   Vérifie   : comme pour tout modèle, que l'import réussit : POST /convert répond 2xx, le
+  #               dialogue se ferme, l'asset apparaît dans « My Assets ».
+  #   Résultat  : KO, et c'est voulu. Le fichier est corrompu, le serveur répond 400 ; le
+  #               rapport donne la cause renvoyée par le serveur (« conversion failed: glTF
+  #               error… ») et la capture d'échec montre l'alerte « Import failed ». La feature
+  #               montre comment un import raté apparaît dans le rapport.
+  #   Teardown  : ferme le dialogue resté ouvert sur l'erreur, pour que l'import de l'ange,
+  #               juste après, parte d'un éditeur propre (et prouve qu'il reste utilisable).
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: ENGINE-import-broken
+    name: Importer un modèle 3D corrompu (KO attendu)
+    tags: [engine, assets, errors]
+    depends_on: [EDITOR-viewport]
+    steps:
+      - click: { role: tab, name: Assets }
+      - click: { role: button, name: Import assets }
+      - upload: { css: "input[type=file][accept*='.glb']" }
+        files: [fixtures/broken-model.glb]
+      # Un fichier jamais vu passe par /convert : c'est là que le serveur le convertit (ou non).
+      - click: { role: button, name: Import model }
+        expect_response: { url: "**/convert", method: POST, status: 2xx, timeout: 60s }
+      - expect: { target: { role: dialog }, count: 0, timeout: 30s }
+      - click: { id: tab-mine }
+      - expect: { target: { role: listitem, has_text: broken-model }, visible: true }
+    teardown:
+      - press: Escape            # ferme le dialogue d'import s'il est resté ouvert
+      - expect: { target: { role: dialog }, count: 0 }
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # ENGINE · Importer un vrai modèle : l'ange (prefab glTF texturé)
+  #   Teste     : l'import d'un glTF lourd et complexe (35 Mo, 16 meshes, une texture), pas
+  #               juste un cube : Assets > Import assets > fichier > Import model.
+  #   Vérifie   : /catalog/<projet>/lookup répond 2xx ; le prefab « cemetery_angel_-_miller »
+  #               apparaît dans « My Assets » ; glissé sur le viewport, il crée sa hiérarchie.
+  #   Note      : déjà importé une fois, le fichier est retrouvé par son hash (pas de nouvel
+  #               envoi de 35 Mo). Un premier import peut prendre plusieurs minutes : envoi
+  #               puis conversion côté serveur.
+  #   Capture   : screenshots/ENGINE-import-angel-angel.png
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: ENGINE-import-angel
+    name: Importer le modèle de l'ange et le poser dans la scène
+    tags: [engine, 3d, assets]
+    mutating: true
+    depends_on: [EDITOR-viewport]
+    steps:
+      - click: { role: tab, name: Assets }
+      - click: { role: button, name: Import assets }
+      - upload: { css: "input[type=file][accept*='.glb']" }
+        files: [fixtures/cemetery_angel_-_miller.glb]
+      - click: { role: button, name: Import model }
+        expect_response: { url: "**/catalog/*/lookup", method: POST, status: 2xx, timeout: 60s }
+      - click: { id: tab-mine }
+      - expect: { target: &angel_asset { role: listitem, has_text: cemetery_angel_-_miller }, visible: true, timeout: 300s }
+      # Le prefab se pose là où on le lâche : au centre du viewport, soit l'origine de la scène.
+      - drag: *angel_asset
+        to: { id: scene-view-canvas }
+      - click: { role: tab, name: Hierarchy }
+      - expect: { target: &angel_row { role: treeitem, within: &hierarchy { css: "[data-slot=hierarchy-view]" }, has_text: cemetery_angel }, count: 1, timeout: 30s }
+      - wait: 2s                 # laisse voir l'ange posé
+      - screenshot: angel
+        of: { id: scene-view-canvas }
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # ENGINE · Un sol pour recevoir les ombres
+  #   Teste     : une primitive Cube, aplatie et élargie dans l'Inspector, avec une couleur.
+  #   Vérifie   : échelle (12 ; 0,1 ; 12), position Y = −0,05 (le dessus du sol est à 0).
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: ENGINE-ground
+    name: Ajouter un sol sous l'ange
+    tags: [engine, 3d]
+    mutating: true
+    depends_on: [ENGINE-import-angel]
+    steps:
+      - click: &tree_blank { css: "[data-slot=hierarchy-view]" }
+        button: right
+        position: { x: 100, y: 500 }
+      - click: { role: menuitem, name: Cube, exact: true }
+      - expect: { target: &cube_rows { role: treeitem, within: *hierarchy, has_text: Cube }, count: 1, timeout: 20s }
+      - select: { role: treeitem, within: *hierarchy, has_text: Cube }
+      - fill: &scale_x { role: spinbutton, name: X, within: { css: div.flex-col, has: { css: ":scope > span", has_text: scale }, nth: last } }
+        value: "12"
+      - press: Enter
+        target: *scale_x
+      - fill: &scale_y { role: spinbutton, name: Y, within: { css: div.flex-col, has: { css: ":scope > span", has_text: scale }, nth: last } }
+        value: "0.1"
+      - press: Enter
+        target: *scale_y
+      - fill: &scale_z { role: spinbutton, name: Z, within: { css: div.flex-col, has: { css: ":scope > span", has_text: scale }, nth: last } }
+        value: "12"
+      - press: Enter
+        target: *scale_z
+      - fill: &position_y { role: spinbutton, name: Y, within: &position { css: div.flex-col, has: { css: ":scope > span", has_text: position }, nth: last } }
+        value: "-0.05"
+      - press: Enter
+        target: *position_y
+      - fill: &color_hex { css: "input[data-part=channel-input][type=text]:visible", within: { css: "[data-scope=color-picker][data-part=root]", has_text: color, nth: first } }
+        value: "#8A8F98"
+      - press: Enter
+        target: *color_hex
+      - expect: { target: *scale_x, number: 12 }
+      - expect: { target: *scale_y, number: 0.1 }
+      - expect: { target: *position_y, number: -0.05 }
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # ENGINE · Un cube doré qui reflète la lumière
+  #   Teste     : le matériau (couleur, roughness) d'une primitive.
+  #   Vérifie   : roughness = 0,1 (surface lisse : reflets nets de la lumière), couleur dorée,
+  #               posé sur le sol à droite de l'ange, en (2,5 ; 0,5 ; 0).
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: ENGINE-shiny-cube
+    name: Ajouter un cube doré et brillant
+    tags: [engine, 3d, material]
+    mutating: true
+    depends_on: [ENGINE-ground]
+    steps:
+      - click: *tree_blank
+        button: right
+        position: { x: 100, y: 500 }
+      - click: { role: menuitem, name: Cube, exact: true }
+      - expect: { target: *cube_rows, count: 2, timeout: 20s }
+      # Le nouveau cube est le dernier de la hiérarchie ; le premier est le sol.
+      - select: &shiny_cube { role: treeitem, within: *hierarchy, has_text: Cube, nth: last }
+      - fill: &position_x { role: spinbutton, name: X, within: *position }
+        value: "2.5"
+      - press: Enter
+        target: *position_x
+      - fill: *position_y
+        value: "0.5"
+      - press: Enter
+        target: *position_y
+      - fill: &roughness { role: spinbutton, name: roughness }
+        value: "0.1"
+      - press: Enter
+        target: *roughness
+      - fill: *color_hex
+        value: ${var.gold}
+      - press: Enter
+        target: *color_hex
+      - expect: { target: *roughness, number: 0.1 }
+      - expect: { target: *position_x, number: 2.5 }
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # ENGINE · Une sphère miroir pour voir les reflets
+  #   Teste     : une primitive Sphere avec un matériau très lisse (roughness 0,05).
+  #   Pourquoi  : sur les faces plates du cube, la lumière ne se reflète que sous un angle
+  #               précis ; une sphère lisse montre toujours une tache de reflet nette.
+  #   Vérifie   : roughness = 0,05, posée sur le sol à gauche de l'ange, en (−2,5 ; 0,5 ; 0).
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: ENGINE-shiny-sphere
+    name: Ajouter une sphère lisse qui reflète la lumière
+    tags: [engine, 3d, material]
+    mutating: true
+    depends_on: [ENGINE-ground]
+    steps:
+      - click: *tree_blank
+        button: right
+        position: { x: 100, y: 500 }
+      - click: { role: menuitem, name: Sphere, exact: true }
+      - select: { role: treeitem, within: *hierarchy, has_text: Sphere }
+      - fill: *position_x
+        value: "-2.5"
+      - press: Enter
+        target: *position_x
+      - fill: *position_y
+        value: "0.5"
+      - press: Enter
+        target: *position_y
+      - fill: *roughness
+        value: "0.05"
+      - press: Enter
+        target: *roughness
+      - fill: *color_hex
+        value: ${var.gold}
+      - press: Enter
+        target: *color_hex
+      - expect: { target: *roughness, number: 0.05 }
+      - expect: { target: *position_x, number: -2.5 }
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # ENGINE · Une lumière qui projette des ombres
+  #   Teste     : une lumière directionnelle inclinée, ombres activées.
+  #   Vérifie   : shadows_enabled est coché (c'est le défaut) ; rotation (−45 ; 30 ; 0) : la
+  #               lumière tombe en biais, l'ombre de l'ange et du cube s'étire sur le sol.
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: ENGINE-light-shadows
+    name: Ajouter une lumière directionnelle avec ombres
+    tags: [engine, 3d, lighting]
+    mutating: true
+    depends_on: [ENGINE-ground]
+    steps:
+      - click: *tree_blank
+        button: right
+        position: { x: 100, y: 500 }
+      - click: { role: menuitem, name: Directional Light, exact: true }
+      - select: { role: treeitem, within: *hierarchy, has_text: DirectionalLight }
+      - fill: &rotation_x { role: spinbutton, name: X, within: &rotation { css: div.flex-col, has: { css: ":scope > span", has_text: rotation }, nth: last } }
+        value: "-45"
+      - press: Enter
+        target: *rotation_x
+      - fill: &rotation_y { role: spinbutton, name: Y, within: *rotation }
+        value: "30"
+      - press: Enter
+        target: *rotation_y
+      - expect: { target: *rotation_x, number: -45, tolerance: 0.01 }
+      - expect: { target: { css: "input[type=checkbox]", within: { css: "div.justify-between", has_text: shadows_enabled } }, checked: true }
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # ENGINE · La caméra du jeu
+  #   Vérifie   : position (0 ; 1,6 ; 7), face à l'ange.
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: ENGINE-camera
+    name: Ajouter la caméra du jeu
+    tags: [engine, 3d]
+    mutating: true
+    depends_on: [ENGINE-ground]
+    steps:
+      - click: *tree_blank
+        button: right
+        position: { x: 100, y: 500 }
+      - click: { role: menuitem, name: Camera, exact: true }
+      - select: &camera_row { role: treeitem, within: *hierarchy, has_text: Camera }
+      - fill: *position_y
+        value: "1.6"
+      - press: Enter
+        target: *position_y
+      - fill: &position_z { role: spinbutton, name: Z, within: *position }
+        value: "7"
+      - press: Enter
+        target: *position_z
+      - expect: { target: *position_z, number: 7 }
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # ENGINE · Une texture en skybox (KO attendu)
+  #   Teste     : le champ skybox de la caméra avec une texture ordinaire (celle de l'ange).
+  #   Vérifie   : que le jeu l'affiche en fond : pas d'erreur WebGPU, et le jeu dessine la
+  #               scène.
+  #   Résultat  : KO, et c'est voulu. Le jeu n'accepte en skybox qu'une bande verticale des 6
+  #               faces d'un cube, qu'il réinterprète en cubemap ; une texture ordinaire ne peut
+  #               pas l'être. WebGPU refuse alors de la lier (« … doesn't match the expected
+  #               dimension (TextureViewDimension::Cube) », cité dans le rapport) et le jeu
+  #               reste entièrement noir (capture « game »).
+  #   Teardown  : arrête le jeu et retire la texture ; la feature suivante met une couleur de
+  #               fond à la place, et le jeu lancé à la fin doit s'afficher normalement.
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: ENGINE-skybox-texture
+    name: Mettre une texture en skybox (KO attendu)
+    tags: [engine, 3d, errors]
+    depends_on: [ENGINE-camera, ENGINE-import-angel]
+    steps:
+      - click: { role: tab, name: Hierarchy }
+      - select: *camera_row
+      - expect: { target: &drop_texture { text: Drop Texture here }, visible: true }
+      # La texture de l'ange, importée avec lui, dans « My Assets ».
+      - click: { role: tab, name: Assets }
+      - click: { id: tab-mine }
+      - drag: { role: listitem, has_text: Texture, nth: first }
+        to: *drop_texture
+      - expect: { target: &clear_texture { role: button, name: Clear Texture }, visible: true }
+      - click: { role: button, name: Play, exact: true }
+      - expect: { target: { role: button, name: Stop, exact: true }, visible: true, timeout: 60s }
+      - wait: 3s                 # laisse au jeu le temps de dessiner (et de voir son fond)
+      - screenshot: game
+        of: &game { id: game-view-canvas }
+      - expect: { no_console: "doesn't match the expected dimension \\(TextureViewDimension::Cube\\)" }
+      - expect: { target: *game, rendered: true, timeout: 10s }
+    teardown:
+      # force : arrêté (ou jamais lancé), le bouton Stop est dans un bloc pointer-events-none.
+      - click: { role: button, name: Stop, exact: true }
+        force: true
+      - click: { role: tab, name: Hierarchy }
+      - select: *camera_row
+      - click: *clear_texture
+      - expect: { target: *drop_texture, visible: true }
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # ENGINE · Un fond de couleur à la place
+  #   Teste     : la couleur de fond de la caméra (clear_color : ce que le jeu affiche derrière
+  #               la scène quand il n'y a pas de skybox).
+  #   Vérifie   : clear_color = #3366CC. Le jeu lancé à la fin doit avoir ce bleu pour couleur
+  #               dominante, ce qui prouve aussi qu'il s'est remis de l'erreur de skybox sans
+  #               recharger la page.
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: ENGINE-sky-color
+    name: Changer la couleur du fond
+    tags: [engine, 3d]
+    mutating: true
+    depends_on: [ENGINE-camera]
+    steps:
+      - click: { role: tab, name: Hierarchy }
+      - select: *camera_row
+      - fill: &clear_color { css: "input[data-part=channel-input][type=text]:visible", within: { css: "[data-scope=color-picker][data-part=root]", has_text: clear_color } }
+        value: ${var.sky}
+      - press: Enter
+        target: *clear_color
+      - expect: { target: *clear_color, value: "${var.sky}" }
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # ENGINE · Écrire un script dans l'éditeur de nœuds
+  #   Teste     : l'onglet Scripting : ajouter des nœuds depuis la bibliothèque, les placer,
+  #               choisir un type, saisir une valeur, relier les nœuds, enregistrer.
+  #   Le script : On Every Frame ──▶ Rotate (axe Y) ◀── Value (float 2)
+  #               soit « à chaque image, tourner de 2° autour de Y » (les axes non reliés
+  #               valent 0).
+  #   Vérifie   : 2 liens dans le graphe ; « Script saved » : le serveur a compilé le graphe
+  #               en wasm (compile-service) et l'a rangé dans le projet.
+  #   Capture   : screenshots/ENGINE-script-build-graph.png
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: ENGINE-script-build
+    name: Construire et enregistrer un script de rotation
+    tags: [engine, script]
+    mutating: true
+    depends_on: [EDITOR-viewport]
+    steps:
+      - click: { role: tab, name: Scripting }
+      # Un script neuf contient déjà le nœud de départ « On Every Frame ».
+      - expect: { target: { css: ".svelte-flow__node-on_every_frame_node" }, visible: true }
+      - click: { role: button, name: Add node }
+      - fill: &node_search { placeholder: Search nodes... }
+        value: Rotate
+      - click: { css: "[role=button]", has_text: Rotate the object }
+      - fill: *node_search
+        value: Value
+      - click: { css: "[role=button]", has_text: A literal value. }
+      - press: Escape
+      # Les deux nœuds arrivent l'un sur l'autre au centre : on les écarte en tirant leur titre,
+      # Value d'abord (ajouté en dernier, il recouvre Rotate). `steps` : l'éditeur de nœuds
+      # (xyflow) ne suit qu'un glissé fait de plusieurs petits mouvements de souris.
+      - drag: { css: ".svelte-flow__node-value_node .dragHandle" }
+        to: &pane { css: ".svelte-flow__pane" }
+        to_position: { x: 210, y: 480 }
+        steps: 12
+      - drag: { css: ".svelte-flow__node-rotate_node .dragHandle" }
+        to: *pane
+        to_position: { x: 570, y: 300 }
+        steps: 12
+      # Value : type float, valeur 2 (degrés par image).
+      - choose: { css: ".svelte-flow__node-value_node select" }
+        option: float
+      - fill: { placeholder: Enter a float }
+        value: "2"
+      # Les liens : on tire un fil d'une poignée de sortie vers une poignée d'entrée.
+      - drag: { css: "[data-handleid=on_every_frame_node_source_1]" }
+        to: { css: "[data-handleid=rotate_node_target_1]" }
+        steps: 12
+      - drag: { css: "[data-handleid=value_node_source_1]" }
+        to: { css: "[data-handleid=rotate_node_target_3]" }
+        steps: 12
+      - expect: { target: { css: ".svelte-flow__edge" }, count: 2 }
+      - fill: { label: Script name }
+        value: e2e-spin-${run.id}
+      - wait: 1s                 # laisse voir le graphe complet
+      - screenshot: graph
+      - click: { role: button, name: Save, exact: true }
+      - expect: { target: { text: Script saved, nth: first }, visible: true, timeout: 60s }
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # ENGINE · Faire écrire un script par l'assistant IA
+  #   Teste     : l'assistant IA de l'onglet Scripting : on lui décrit le comportement voulu en
+  #               français, il construit le graphe de nœuds lui-même.
+  #   Le prompt : faire flotter la sphère (monter et descendre) avec un sinus du temps écoulé,
+  #               en position absolue (Set Position) pour qu'elle ne s'envole pas.
+  #   Vérifie   : l'assistant répond « Updated the script » (graphe validé par le vérificateur
+  #               de types de l'éditeur, puis chargé), sans « This script contains errors » ;
+  #               le graphe a au moins 4 nœuds et 3 liens, dont un nœud Sin ; « Script saved »
+  #               (le serveur compile le graphe de l'IA en wasm, comme un script fait main).
+  #   Note      : la réponse d'une IA varie d'un run à l'autre : le test vérifie la forme du
+  #               graphe, pas son contenu exact. Compter 15 à 60 s de réflexion.
+  #   Capture   : screenshots/ENGINE-script-ai-graph.png
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: ENGINE-script-ai
+    name: Faire écrire un script par l'assistant IA
+    tags: [engine, script, ai]
+    mutating: true
+    depends_on: [ENGINE-script-build]
+    steps:
+      - click: { role: tab, name: Scripting }
+      # « New » repart d'un script vierge ; le script précédent est enregistré, l'éditeur
+      # demande quand même confirmation.
+      - click: { role: button, name: New, exact: true }
+      - click: { role: button, name: Continue, exact: true }
+      - expect: { target: &script_name { label: Script name }, value: Untitled script }
+      - fill: { placeholder: Ask the AI to explain or write your script }
+        value: >-
+          Fais flotter cet objet au-dessus du sol : à chaque image, utilise Set Position pour le
+          placer en x = -2.5, z = 0 et y = 1 + 0.5 * sin(temps écoulé en secondes * 2), le sinus
+          étant calculé en radians. Il doit monter et descendre doucement, sans fin.
+      - click: { role: button, name: Send, exact: true }
+      - expect: { target: { text: Updated the script, nth: first }, visible: true, timeout: 240s }
+      - expect: { target: { text: This script contains errors }, count: 0 }
+      - expect: { js: "() => document.querySelectorAll('.svelte-flow__node').length >= 4 && document.querySelectorAll('.svelte-flow__edge').length >= 3" }
+      - expect: { target: { css: ".svelte-flow__node-sin_node", nth: first }, visible: true }
+      - fill: *script_name
+        value: e2e-float-${run.id}
+      - wait: 2s                 # laisse voir le graphe écrit par l'IA
+      - screenshot: graph
+      - click: { role: button, name: Save, exact: true }
+      - expect: { target: { text: Script saved, nth: first }, visible: true, timeout: 60s }
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # ENGINE · Attacher le script à l'ange
+  #   Teste     : Inspector > Add Component > Script, puis glisser le script depuis
+  #               Assets > Scripts sur le champ « Drop Script here ».
+  #   Vérifie   : le champ du composant Script affiche l'id du script (plus de « Drop
+  #               Script here »).
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: ENGINE-script-on-angel
+    name: Attacher le script de rotation à l'ange
+    tags: [engine, script]
+    mutating: true
+    depends_on: [ENGINE-script-build, ENGINE-import-angel]
+    steps:
+      - click: { role: tab, name: Hierarchy }
+      - select: *angel_row
+      - click: &add_component { role: button, name: Add Component }
+      - click: &add_script { role: button, name: Script, exact: true, within: { id: add-component-list } }
+      - expect: { target: &drop_script { text: Drop Script here }, visible: true }
+      # L'Inspector garde l'objet sélectionné pendant qu'on passe sur l'onglet Assets.
+      - click: { role: tab, name: Assets }
+      - click: { id: tab-script }
+      - drag: &script_card { css: "[id^=script-card-]", has_text: "e2e-spin-${run.id}" }
+        to: *drop_script
+      - expect: { target: *drop_script, count: 0 }
+      - expect: { target: { role: button, name: Clear Script }, count: 1 }
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # ENGINE · Attacher le même script au cube doré
+  #   Vérifie   : un même script se réutilise sur plusieurs objets.
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: ENGINE-script-on-cube
+    name: Attacher le même script au cube doré
+    tags: [engine, script]
+    mutating: true
+    depends_on: [ENGINE-script-build, ENGINE-shiny-cube]
+    steps:
+      - click: { role: tab, name: Hierarchy }
+      - select: *shiny_cube
+      - click: *add_component
+      - click: *add_script
+      - expect: { target: *drop_script, visible: true }
+      - click: { role: tab, name: Assets }
+      - click: { id: tab-script }
+      - drag: *script_card
+        to: *drop_script
+      - expect: { target: *drop_script, count: 0 }
+      - click: { role: tab, name: Hierarchy }
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # ENGINE · Attacher le script de l'IA à la sphère
+  #   Vérifie   : le script écrit par l'IA s'attache comme un script fait main.
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: ENGINE-script-ai-on-sphere
+    name: Attacher le script de l'IA à la sphère
+    tags: [engine, script, ai]
+    mutating: true
+    depends_on: [ENGINE-script-ai, ENGINE-shiny-sphere]
+    steps:
+      - click: { role: tab, name: Hierarchy }
+      - select: { role: treeitem, within: *hierarchy, has_text: Sphere }
+      - click: *add_component
+      - click: *add_script
+      - expect: { target: *drop_script, visible: true }
+      - click: { role: tab, name: Assets }
+      - click: { id: tab-script }
+      - drag: { css: "[id^=script-card-]", has_text: "e2e-float-${run.id}" }
+        to: *drop_script
+      - expect: { target: *drop_script, count: 0 }
+      - click: { role: tab, name: Hierarchy }
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # ENGINE · Lancer le jeu : la scène s'anime
+  #   Teste     : Start, dans l'onglet Game, avec tout ce qui précède.
+  #   Vérifie   : le jeu dessine la scène ; sa couleur dominante est le bleu de la caméra
+  #               (#3366CC, à 12 près par canal), donc le jeu s'est remis de l'erreur de
+  #               skybox ; l'image change d'une capture à l'autre : les scripts tournent.
+  #   À voir    : l'ange et le cube qui tournent (script fait main), la sphère qui flotte
+  #               (script de l'IA), les ombres qui suivent sur le sol, le reflet sur la sphère.
+  #   Capture   : screenshots/ENGINE-play-scene-game.png
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: ENGINE-play-scene
+    name: Lancer le jeu et voir la scène s'animer
+    tags: [engine, 3d, play, script]
+    depends_on: [ENGINE-script-on-angel, ENGINE-script-on-cube, ENGINE-script-ai-on-sphere, ENGINE-light-shadows, ENGINE-sky-color]
+    steps:
+      - click: { role: button, name: Play, exact: true }
+      # 60 s : le jeu se télécharge au premier lancement, long sur une connexion lente.
+      - expect: { target: &stop { role: button, name: Stop, exact: true }, visible: true, timeout: 60s }
+      - expect: { target: *game, rendered: true, timeout: 30s }
+      - expect: { target: *game, dominant_color: "${var.sky}", timeout: 20s }
+      - expect: { target: *game, animated: true, timeout: 20s }
+      - screenshot: game
+        of: *game
+      - wait: 8s                 # laisse voir l'ange et le cube tourner, la sphère flotter
+      - click: *stop
+      - expect: { target: { css: "div.pointer-events-none:has(> button[aria-label=Stop])" }, count: 1 }
