@@ -58,6 +58,9 @@ def test_step_options_sit_beside_the_action():
         ({"click": {"text": "a"}, "button": "double"}, "button"),
         ({"select": {"text": "a"}, "value": "x"}, "Extra inputs"),
         ({"store": "x", "url_pattern": "id=\\w+"}, "capture group"),
+        ({"drag": {"text": "a"}, "to": {"text": "b"}, "button": "right"}, "button needs steps"),
+        ({"drag": {"text": "a"}, "to": {"text": "b"}, "to_position": {"x": 1, "y": 1}, "to_offset": {"x": 1, "y": 1}}, "keep one"),
+        ({"press": "KeyW", "hold": 0}, "greater than 0"),
         ("goto", "a step is a mapping"),
     ],
 )

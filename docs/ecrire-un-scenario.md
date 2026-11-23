@@ -276,14 +276,18 @@ Beaucoup de champs de l'Inspector ne prennent la valeur qu'après **Entrée** : 
 | Option | Défaut | Rôle |
 | --- | --- | --- |
 | `target` | l'élément qui a le focus | L'élément sur lequel appuyer |
+| `hold` | | Garde la touche enfoncée pendant cette durée (`1s`, `500ms`), puis la relâche. **Obligatoire pour le moteur 3D**, qui lit à chaque image les touches tenues : une touche enfoncée puis relâchée aussitôt ne déplace pas la caméra |
 
 La valeur est le nom d'une touche, ou une combinaison : `Enter`, `Escape`, `Tab`, `Delete`,
-`ArrowDown`, `Control+Z`, `Shift+A`…
+`ArrowDown`, `Control+Z`, `Shift+A`… Pour une touche lue par sa position physique (le moteur
+Bevy), donner son code : `KeyW` est la touche Z d'un clavier AZERTY.
 
 ```yaml
       - press: Enter
         target: { role: spinbutton, name: X }
       - press: Escape                  # ferme un dialogue ouvert
+      - press: KeyW                    # avancer dans la scène (Z en AZERTY)
+        hold: 1s
 ```
 
 L'option s'appelle `target` et pas `on` : en YAML, une clé `on` toute seule est lue comme le
@@ -313,7 +317,10 @@ Glisse l'élément `drag` et le lâche sur l'élément `to`.
 | --- | --- | --- |
 | `to` | **obligatoire** | La cible où lâcher |
 | `to_position` | centre de `to` | `{ x, y }` : le point d'arrivée, en pixels depuis le coin haut-gauche de `to` |
-| `steps` | | Fait le glissé en N petits mouvements de souris (ex. `12`). **Obligatoire dans l'éditeur de nœuds** (onglet Scripting), qui ignore un glissé fait d'un seul saut. Sans `steps`, c'est un glisser-déposer HTML classique, qui convient aux assets et aux scripts déposés sur l'Inspector |
+| `to_offset` | | `{ x, y }` : le point d'arrivée, en pixels depuis le **centre** de `to` (négatif = vers la gauche ou le haut). À la place de `to_position` |
+| `from_offset` | centre de `drag` | `{ x, y }` : le point où l'on appuie, en pixels depuis le centre de `drag`. Sert à viser une poignée de gizmo à côté de l'objet, ou un coin vide du viewport pour tirer un rectangle de sélection |
+| `steps` | | Fait le glissé en N petits mouvements de souris (ex. `12`). **Obligatoire dans l'éditeur de nœuds** (onglet Scripting) et dans le viewport 3D, qui ignorent un glissé fait d'un seul saut. Sans `steps`, c'est un glisser-déposer HTML classique, qui convient aux assets et aux scripts déposés sur l'Inspector |
+| `button` | `left` | Le bouton tenu pendant le glissé : `left`, `right` (regarder autour dans le viewport 3D) ou `middle` (déplacer la vue). Demande `steps` |
 | `timeout` | celui de la suite | Attente maximale |
 
 ```yaml
@@ -329,6 +336,18 @@ Glisse l'élément `drag` et le lâche sur l'élément `to`.
       - drag: { css: "[data-handleid=value_node_source_1]" }
         to: { css: "[data-handleid=rotate_node_target_3]" }
         steps: 12
+      # Rectangle de sélection dans le viewport : d'un coin à l'autre, autour du centre
+      - drag: { id: scene-view-canvas }
+        from_offset: { x: -320, y: -230 }
+        to: { id: scene-view-canvas }
+        to_offset: { x: 320, y: 230 }
+        steps: 20
+      # Regarder autour : clic droit maintenu
+      - drag: { id: scene-view-canvas }
+        to: { id: scene-view-canvas }
+        to_offset: { x: 120, y: 0 }
+        button: right
+        steps: 20
 ```
 
 ### `choose` : choisir dans une liste déroulante
@@ -638,3 +657,4 @@ Les scénarios livrés sont aussi de bons modèles : chaque feature y est préc�
 qui dit ce qu'elle teste.
 - [critical.yaml](../scenarios/critical.yaml) : connexion, éditeur, publication, paiement Stripe, launcher.
 - [engine.yaml](../scenarios/engine.yaml) : scripts no-code et IA, lumière, ombres, matériaux, cas KO avec `teardown`.
+- [atp.yaml](../scenarios/atp.yaml) : les 78 features de l'ATP, dont l'inscription par e-mail, les gizmos (`from_offset`), la caméra de l'éditeur (`button: right`, `hold`), chaque champ des composants.

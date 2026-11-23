@@ -215,15 +215,21 @@ class FillStep(_Step):
 class PressStep(_Step):
     """Press a key (``Enter``, ``Delete``, ``Control+Z``) on ``target``, or on whatever has focus.
 
+    ``hold`` keeps the key down that long before releasing it: a game engine that reads which
+    keys are held each frame (the editor's fly camera, ``KeyW``) ignores a key pressed and
+    released within one frame.
+
     (Not ``on``: YAML 1.1 reads a bare ``on`` key as the boolean true.)
     """
 
     ACTION: ClassVar[str] = "press"
     press: str
     target: Target | None = None
+    hold: Duration | None = Field(default=None, gt=0)
 
     def describe(self) -> str:
-        return f"press {self.press}" + (f" on {self.target.describe()}" if self.target else "")
+        held = f" for {self.hold:g}s" if self.hold is not None else ""
+        return f"press {self.press}{held}" + (f" on {self.target.describe()}" if self.target else "")
 
 
 class UploadStep(_Step):
@@ -241,22 +247,45 @@ class DragStep(_Step):
     """Drag ``drag`` onto ``to`` with the mouse: HTML5 drag and drop (an asset onto the viewport),
     a node moved in the script editor, or a wire pulled from one handle to another.
 
-    ``to_position`` drops at that point of ``to`` (from its top-left corner) instead of its centre.
+    ``to_position`` drops at that point of ``to`` (from its top-left corner) instead of its centre;
+    ``to_offset`` drops that many pixels away from the centre of ``to``. ``from_offset`` presses
+    that many pixels away from the centre of ``drag``: a gizmo handle beside the selected object,
+    an empty corner of a viewport to start a selection box.
     ``steps`` moves the mouse there in that many small moves, holding the button, instead of
-    Playwright's HTML5 drag: node editors (xyflow) ignore a single jump. With ``steps``, the
-    press happens at the centre of ``drag``, whatever covers it.
+    Playwright's HTML5 drag: node editors (xyflow) and 3D viewports ignore a single jump. With
+    ``steps``, the press happens at that point of ``drag``, whatever covers it, and ``button``
+    picks the mouse button held (``right`` looks around in the 3D viewport, ``middle`` pans).
     """
 
     ACTION: ClassVar[str] = "drag"
     drag: Target
     to: Target
     to_position: Point | None = None
+    to_offset: Point | None = None
+    from_offset: Point | None = None
+    button: Literal["left", "right", "middle"] = "left"
     steps: int | None = Field(default=None, ge=1, le=100)
     timeout: Duration | None = None
 
+    @model_validator(mode="after")
+    def _consistent(self) -> DragStep:
+        if self.to_position is not None and self.to_offset is not None:
+            raise ValueError("to_position and to_offset both say where to drop: keep one")
+        if self.button != "left" and self.steps is None:
+            raise ValueError("button needs steps: only a mouse drag (steps) can hold another button")
+        return self
+
     def describe(self) -> str:
-        at = f" at ({self.to_position.x:g}, {self.to_position.y:g})" if self.to_position else ""
-        return f"drag {self.drag.describe()} to {self.to.describe()}{at}"
+        at = ""
+        if self.to_position:
+            at = f" at ({self.to_position.x:g}, {self.to_position.y:g})"
+        elif self.to_offset:
+            at = f" at centre {self.to_offset.x:+g}, {self.to_offset.y:+g}"
+        source = self.drag.describe()
+        if self.from_offset:
+            source += f" from centre {self.from_offset.x:+g}, {self.from_offset.y:+g}"
+        prefix = "drag" if self.button == "left" else f"{self.button}-drag"
+        return f"{prefix} {source} to {self.to.describe()}{at}"
 
 
 class ChooseStep(_Step):

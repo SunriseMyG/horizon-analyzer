@@ -96,7 +96,7 @@
     },
     "DragStep": {
       "additionalProperties": false,
-      "description": "Drag ``drag`` onto ``to`` with the mouse: HTML5 drag and drop (an asset onto the viewport),\na node moved in the script editor, or a wire pulled from one handle to another.\n\n``to_position`` drops at that point of ``to`` (from its top-left corner) instead of its centre.\n``steps`` moves the mouse there in that many small moves, holding the button, instead of\nPlaywright's HTML5 drag: node editors (xyflow) ignore a single jump. With ``steps``, the\npress happens at the centre of ``drag``, whatever covers it.",
+      "description": "Drag ``drag`` onto ``to`` with the mouse: HTML5 drag and drop (an asset onto the viewport),\na node moved in the script editor, or a wire pulled from one handle to another.\n\n``to_position`` drops at that point of ``to`` (from its top-left corner) instead of its centre;\n``to_offset`` drops that many pixels away from the centre of ``to``. ``from_offset`` presses\nthat many pixels away from the centre of ``drag``: a gizmo handle beside the selected object,\nan empty corner of a viewport to start a selection box.\n``steps`` moves the mouse there in that many small moves, holding the button, instead of\nPlaywright's HTML5 drag: node editors (xyflow) and 3D viewports ignore a single jump. With\n``steps``, the press happens at that point of ``drag``, whatever covers it, and ``button``\npicks the mouse button held (``right`` looks around in the 3D viewport, ``middle`` pans).",
       "properties": {
         "drag": {
           "$ref": "#/$defs/Target"
@@ -114,6 +114,38 @@
             }
           ],
           "default": null
+        },
+        "to_offset": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Point"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "from_offset": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Point"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "button": {
+          "default": "left",
+          "enum": [
+            "left",
+            "right",
+            "middle"
+          ],
+          "title": "Button",
+          "type": "string"
         },
         "steps": {
           "anyOf": [
@@ -696,7 +728,7 @@
     },
     "PressStep": {
       "additionalProperties": false,
-      "description": "Press a key (``Enter``, ``Delete``, ``Control+Z``) on ``target``, or on whatever has focus.\n\n(Not ``on``: YAML 1.1 reads a bare ``on`` key as the boolean true.)",
+      "description": "Press a key (``Enter``, ``Delete``, ``Control+Z``) on ``target``, or on whatever has focus.\n\n``hold`` keeps the key down that long before releasing it: a game engine that reads which\nkeys are held each frame (the editor's fly camera, ``KeyW``) ignores a key pressed and\nreleased within one frame.\n\n(Not ``on``: YAML 1.1 reads a bare ``on`` key as the boolean true.)",
       "properties": {
         "press": {
           "title": "Press",
@@ -712,6 +744,19 @@
             }
           ],
           "default": null
+        },
+        "hold": {
+          "anyOf": [
+            {
+              "gt": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Hold"
         }
       },
       "required": [

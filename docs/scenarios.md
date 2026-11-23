@@ -17,6 +17,7 @@ Chacun nettoie tout ce qu'il crée.
 | [`scenarios/smoke.yaml`](../scenarios/smoke.yaml) | 3 | ~2 s | Non | Partout, en headless (CI toutes les heures) |
 | [`scenarios/critical.yaml`](../scenarios/critical.yaml) | 17 | ~35 s | Oui, puis nettoyé | Machine avec GPU, navigateur visible |
 | [`scenarios/engine.yaml`](../scenarios/engine.yaml) | 18 | ~2 min | Un projet, supprimé en fin de run | Machine avec GPU, navigateur visible |
+| [`scenarios/atp.yaml`](../scenarios/atp.yaml) | 78 | ~10 min | Un compte, un projet, un jeu publié, des pièces de test ; tout est supprimé sauf les pièces | Machine avec GPU, navigateur visible |
 
 Chaque feature des fichiers YAML est précédée d'un commentaire qui dit ce qu'elle teste, comment
 c'est vérifié et ce qu'elle écrit en prod. Cette page en donne la vue d'ensemble. Pour écrire ou
@@ -226,6 +227,66 @@ que la scène s'affiche et bouge.
 dédupliqué par hash : une fois importé sur le compte, l'import suivant le retrouve sans le
 renvoyer, en une seconde. Le tout premier import peut prendre plusieurs minutes (envoi, puis
 conversion côté serveur) : la feature attend jusqu'à 5 minutes.
+## Le scénario ATP
+
+`scenarios/atp.yaml` reprend l'onglet « Test Plan » du document d'ATP (atp_770_Horizon) : une
+feature par ligne, avec le même numéro (`F1-registration` … `F78-add-script-component`), et
+pour tag la catégorie du document (`critical`, `secondary`, `ui`, `compat`) en plus de `atp`.
+Les features tournent dans l'ordre du document, sur une seule page. Seules F77 (variable) et F78
+(composant de script) sont jouées juste après F66, avec le reste de l'onglet Scripting.
+
+```powershell
+horizon-analyzer run scenarios/atp.yaml                       # tout le document
+horizon-analyzer run scenarios/atp.yaml --tags critical       # les « Critical feature »
+horizon-analyzer run scenarios/atp.yaml --only F34-camera-skybox
+```
+
+Avant le premier run : renseigner `HORIZON_SIGNUP_PASSWORD` dans `.env` (le mot de passe du
+compte jetable de F1), et vérifier que les fichiers de `scenarios/fixtures/` existent
+(`python scripts/make_atp_fixtures.py` les régénère).
+
+| Bloc | Features | Ce qui est fait |
+| --- | --- | --- |
+| Compte | F1, F2 | Inscription avec un e-mail jetable `e2e-<run id>@<domaine mail.tm>` ; le test lit le code à 6 chiffres par l'API de mail.tm, valide le compte, se déconnecte. Puis connexion au compte de test |
+| Projet | F3, F4 | Nouveau jeu (la scène vide se charge), import d'un `.glb`, de deux `.png` (texture, skybox) et d'un `.wasm` |
+| Scène | F5 à F24 | Onglets, glisser le modèle dans la scène, sélection, composant Physics, caméra, PointLight, DirectionalLight, enfant, duplication, suppression, Transform par l'Inspector, mesh (le cube devient une sphère), texture, couleur, rugosité, puis échelle, position et rotation par le gizmo |
+| Composants | F25 à F51 | Chaque champ de PointLight, DirectionalLight, Camera (dont une vraie skybox), Physics, CharacterController (dont les touches) et Script |
+| Éditeur | F52 à F58 | Sélection par rectangle, lumière ambiante, image de chargement, thème, caméra de l'éditeur (clic droit + touches), jouer, indicateur de performances |
+| Scripts | F59 à F66, F77, F78 | Créer, ajouter, supprimer, relier, délier des nœuds, déplacer la vue (clic milieu), script écrit par l'IA, enregistrer, variable, composant |
+| Historique | F67 à F69 | Undo/Redo, restaurer une version, retour à la liste des projets |
+| Joueur | F70 à F76 | Publier (gratuit), connexion au launcher, pièces par Stripe, jouer, quitter, passer le jeu à 10 pièces, l'acheter |
+
+Comment certaines features sont vérifiées :
+
+- **Gizmos (F22-F24).** La touche F recentre la caméra sur l'objet sélectionné : le gizmo est
+  alors au centre du viewport. Le test tire la poignée X de l'échelle (le long de l'axe, vers la
+  droite et le bas), le cercle central de la translation et le centre de la rotation, puis
+  vérifie que la valeur du Transform a changé.
+- **Caméra de l'éditeur (F56).** L'éditeur garde la position de sa caméra par projet dans le
+  localStorage (`camera-per-room`) : le test la lit avant et après le clic droit et les touches
+  tenues (`KeyW` = Z en AZERTY).
+- **Versions (F68).** Chaque modification crée une version. Le test ajoute une sphère, la
+  supprime, puis restaure la version d'avant la suppression ; la sphère doit revenir.
+- **Booléens.** Ombres, collisions, gravité, `rotate_to_movement` : l'interrupteur est basculé
+  puis remis dans son état d'origine (« Enable or disable »), pour que la scène reste stable.
+
+Points à connaître :
+
+- F1 lit le code dans une boîte mail.tm, par son API (`api.mail.tm`). Cette API n'accepte pas
+  les appels venus d'un autre site (pas d'en-tête CORS) : le test ouvre `api.mail.tm` dans
+  l'onglet pour l'appeler, puis revient sur l'éditeur. yopmail ne convient pas : derrière Cloudflare, il refuse les navigateurs pilotés
+  par un test, même quand on coche la case à la main. Si mail.tm est en panne, F1 sort KO sans
+  que ce soit un problème d'Horizon.
+- F63 efface le lien avec Retour arrière : l'éditeur de nœuds (xyflow) n'écoute pas la touche
+  Suppr. L'ATP dit « delete key » (le nom de Retour arrière sur Mac).
+- Premier run (2026-11-21) : un `.wasm` importé n'apparaît pas dans les assets (F4 KO), parce
+  que la liste des scripts vient de compile-service, qui ne connaît que les scripts faits dans
+  l'éditeur de nœuds. C'est un écart réel avec l'ATP ; seule F51 en dépend.
+- Ce scénario a été écrit d'après le code source d'Horizon (clone du 7 novembre 2026) et le
+  document d'ATP. Les sélecteurs déjà utilisés par `critical.yaml` et `engine.yaml` sont
+  vérifiés en prod ; les autres (Physics, CharacterController, réglages, versions, variables…)
+  le seront au premier run.
+
 ## Données de test
 
 | Donnée | Où | Note |

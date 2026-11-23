@@ -14,7 +14,7 @@ import time
 from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from PIL import Image, ImageChops
 from playwright.sync_api import Error as PlaywrightError
@@ -32,6 +32,7 @@ from horizon_analyzer.schema import (
     FillStep,
     GotoStep,
     HoverStep,
+    Point,
     PressStep,
     ReloadStep,
     ResponseMatch,
@@ -387,7 +388,9 @@ class PlaywrightExecutor:
             case FillStep():
                 self.locate(step.fill).fill(render(step.value), timeout=self._ms(step.timeout))
             case PressStep():
-                if step.target is not None:
+                if step.hold is not None:
+                    self._hold_keys(step.press, step.target, step.hold)
+                elif step.target is not None:
                     self.locate(step.target).press(step.press)
                 else:
                     page.keyboard.press(step.press)
@@ -395,12 +398,13 @@ class PlaywrightExecutor:
                 files = [self.context.resolve_file(path) for path in step.files]
                 self.locate(step.upload).set_input_files(files)
             case DragStep():
-                position = {"x": step.to_position.x, "y": step.to_position.y} if step.to_position else None
                 source, target, timeout = self.locate(step.drag), self.locate(step.to), self._ms(step.timeout)
+                start = _point_in(source, step.from_offset, None, timeout)
+                end = _point_in(target, step.to_offset, step.to_position, timeout)
                 if step.steps is None:
-                    source.drag_to(target, target_position=position, timeout=timeout)
+                    source.drag_to(target, source_position=start, target_position=end, timeout=timeout)
                 else:
-                    self._mouse_drag(source, target, position, step.steps, timeout)
+                    self._mouse_drag(source, target, start, end, step.steps, step.button, timeout)
             case ChooseStep():
                 self.locate(step.choose).select_option(render(step.option), timeout=self._ms(step.timeout))
             case WaitStep():
@@ -421,16 +425,41 @@ class PlaywrightExecutor:
                 self._check(step.expect)
         return []
 
-    def _mouse_drag(self, source: Locator, target: Locator, position: dict[str, float] | None, steps: int, timeout: float) -> None:
-        """Press at the centre of ``source``, move to ``target`` in ``steps`` moves, release."""
+    def _mouse_drag(
+        self,
+        source: Locator,
+        target: Locator,
+        start: dict[str, float] | None,
+        end: dict[str, float] | None,
+        steps: int,
+        button: Literal["left", "right", "middle"],
+        timeout: float,
+    ) -> None:
+        """Press ``button`` at ``start`` in ``source`` (its centre by default), move to ``end`` in
+        ``target`` in ``steps`` moves, release. Points are from each element's top-left corner."""
         mouse = self.page.mouse
-        start = _box(source, timeout)
-        end = _box(target, timeout)
-        to_x, to_y = (end["x"] + position["x"], end["y"] + position["y"]) if position else (end["x"] + end["width"] / 2, end["y"] + end["height"] / 2)
-        mouse.move(start["x"] + start["width"] / 2, start["y"] + start["height"] / 2)
-        mouse.down()
-        mouse.move(to_x, to_y, steps=steps)
-        mouse.up()
+        from_box = _box(source, timeout)
+        to_box = _box(target, timeout)
+        start = start or {"x": from_box["width"] / 2, "y": from_box["height"] / 2}
+        end = end or {"x": to_box["width"] / 2, "y": to_box["height"] / 2}
+        mouse.move(from_box["x"] + start["x"], from_box["y"] + start["y"])
+        mouse.down(button=button)
+        mouse.move(to_box["x"] + end["x"], to_box["y"] + end["y"], steps=steps)
+        mouse.up(button=button)
+
+    def _hold_keys(self, keys: str, target: Target | None, seconds: float) -> None:
+        """Keep ``keys`` (``KeyW``, ``Shift+KeyA``) down for ``seconds``, then release them."""
+        if target is not None:
+            self.locate(target).focus()
+        keyboard = self.page.keyboard
+        names = keys.split("+")
+        for name in names:
+            keyboard.down(name)
+        try:
+            self.page.wait_for_timeout(seconds * 1000)
+        finally:
+            for name in reversed(names):
+                keyboard.up(name)
 
     def _stored_value(self, step: StoreStep) -> str:
         if step.text_of is not None:
@@ -691,6 +720,17 @@ def _box(locator: Locator, timeout_ms: float) -> dict[str, float]:
     if box is None:
         raise StepFailure(f"{locator} is not visible")
     return box
+
+
+def _point_in(locator: Locator, offset: Point | None, position: Point | None, timeout_ms: float) -> dict[str, float] | None:
+    """A point of the element from its top-left corner: ``position`` as is, or ``offset`` from its
+    centre. ``None`` (neither given) lets the caller use the centre."""
+    if position is not None:
+        return {"x": position.x, "y": position.y}
+    if offset is None:
+        return None
+    box = _box(locator, timeout_ms)
+    return {"x": box["width"] / 2 + offset.x, "y": box["height"] / 2 + offset.y}
 
 
 def _is_selected(locator: Locator, timeout_ms: float) -> bool:

@@ -1,0 +1,1889 @@
+# yaml-language-server: $schema=./horizon-analyzer.schema.json
+#
+# ╔══════════════════════════════════════════════════════════════════════════════════════════╗
+# ║  ATP Horizon (atp_770_Horizon) : les 78 features du plan de test, de F1 à F78            ║
+# ╚══════════════════════════════════════════════════════════════════════════════════════════╝
+#
+#   Une feature par ligne de l'onglet « Test Plan » du document d'ATP, avec le même numéro
+#   (F1 … F78) et les mêmes étapes, dans l'ordre du document. Une seule exception d'ordre :
+#   F77 (variable) et F78 (composant) concernent l'éditeur de scripts ; elles sont jouées juste
+#   après F66, avec les autres features de l'onglet Scripting, plutôt qu'après l'achat du jeu
+#   dans le launcher (il faudrait rouvrir le projet pour elles seules).
+#
+#   Le parcours :
+#     Compte    F1 inscription (code lu dans une boîte mail.tm) -> F2 connexion au compte de test
+#     Projet    F3 créer le jeu -> F4 importer un modèle, deux textures, un script wasm
+#     Scène     F5 … F24 : vues, objets, hiérarchie, Inspector, gizmos
+#     Composants F25 … F51 : PointLight, DirectionalLight, Camera, Physics,
+#               CharacterController, Script
+#     Éditeur   F52 … F58 : sélection multiple, réglages du jeu, thème, caméra, jouer, perfs
+#     Scripts   F59 … F66 puis F77, F78 : éditeur de nœuds et assistant IA
+#     Historique F67 annuler/rétablir, F68 versions, F69 retour à la liste des projets
+#     Joueur    F70 publier -> F71 launcher -> F72 pièces (Stripe) -> F73 jouer -> F74 quitter
+#               -> F75 modifier le jeu publié -> F76 l'acheter avec les pièces
+#
+#   Lancer :   horizon-analyzer run scenarios/atp.yaml            (navigateur visible, GPU)
+#              horizon-analyzer run scenarios/atp.yaml --only F34-camera-skybox
+#   Données :  .env : HORIZON_EMAIL, HORIZON_PASSWORD (compte de test) et
+#              HORIZON_SIGNUP_PASSWORD (mot de passe du compte jetable créé par F1).
+#              Fichiers : scenarios/fixtures/ (python scripts/make_atp_fixtures.py).
+#
+# Écrit en prod, puis nettoie en fin de run (cleanup, même après un échec) :
+#   - un compte e2e-<run id>@<domaine mail.tm> et sa boîte mail (F1), supprimés ;
+#   - un projet e2e-<run id> (F3), supprimé ; le jeu publié (F70) est dépublié avant ;
+#   - +500 pièces de test (F72, Stripe en mode test) et -10 (F76) sur le compte de test.
+#
+# Adresses : celles vérifiées en prod par les autres scénarios (editor.play-horizon.games).
+# Le document d'ATP cite studio.play-horizon.games pour Horizon Studio : changer base_urls.editor
+# si l'éditeur a déménagé.
+
+suite: horizon-prod-atp
+description: Les 78 features de l'ATP Horizon, de l'inscription à l'achat d'un jeu avec des pièces.
+base_urls:
+  editor: https://editor.play-horizon.games
+  launcher: https://play.play-horizon.games
+  api: https://api.play-horizon.games
+  mailtm: https://api.mail.tm      # boîte mail jetable de F1 (API, sans captcha)
+locale: fr-FR             # le launcher et Stripe suivent la langue du navigateur
+timeout: 15s
+dialogs: accept           # la suppression de projet passe par un confirm()
+ignore_console:
+  - "GPU stall due to ReadPixels"   # avertissement du gizmo three.js, sans conséquence
+  # Clic droit maintenu dans le viewport (F56) : le moteur verrouille le pointeur. Chrome le
+  # refuse quand la fenêtre du test n'a pas le focus (on travaille dans une autre fenêtre) ;
+  # l'erreur ne dit rien d'Horizon et la caméra bouge quand même.
+  - "not valid for pointer lock"
+  - "Too many pointer lock requests"
+fail_on_console:
+  - "panicked at"                   # le wasm Bevy a planté : la feature est KO
+  - "^\\[pageerror\\]"              # exception JavaScript non rattrapée
+
+vars:
+  gold: "#C9A227"         # couleur du cube (F20)
+  warm: "#FF8040"         # couleur de la PointLight (F25)
+  sun: "#FFF1D6"          # couleur de la DirectionalLight (F30)
+  sky: "#3366CC"          # clear color de la caméra (F35)
+  # Remplis par F1 ; « none » tant qu'elle n'est pas allée jusque-là, pour que son nettoyage
+  # sache qu'il n'y a rien à supprimer.
+  mail_domain: none
+  mail_account: none
+  mail_token: none
+
+features:
+  # ════════════════════════════════════════════════════════════════════════════ COMPTE
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F1 · Inscription
+  #   Teste     : « Sign Up » sur la page de connexion de l'éditeur, avec un nom, un e-mail
+  #               jetable e2e-<run id>@<domaine mail.tm> et un mot de passe ; puis la
+  #               validation de l'e-mail par le code à 6 chiffres reçu.
+  #   Vérifie   : POST /signup 2xx et la page « Verify your email » ; le mail du code arrive
+  #               dans la boîte ; le code saisi, POST /auth/email/verify 2xx, l'accueil
+  #               « Welcome back » s'affiche (le compte est connecté) ; « Logout » ramène sur
+  #               /login.
+  #   La boîte  : mail.tm, un service d'e-mails jetables fait pour tester des inscriptions. Le
+  #               test crée la boîte et lit le mail par son API. Cette API refuse les appels
+  #               venus d'un autre site (pas d'en-tête CORS) : le test ouvre donc api.mail.tm
+  #               dans l'onglet pour l'appeler, puis revient sur l'éditeur. (yopmail est
+  #               exclu : derrière Cloudflare, il refuse les navigateurs pilotés.)
+  #   Écrit     : un compte Horizon et une boîte mail.tm. Nettoyage : en fin de run, le test se
+  #               connecte avec le compte et le supprime (DELETE /users/<id>), puis supprime la
+  #               boîte.
+  #   Pourquoi  : l'ATP demande « Check your email to validate your account » : sans le code, on
+  #               ne peut pas se connecter (le serveur répond 403).
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F1-registration
+    name: Inscription d'un nouveau compte et validation de l'e-mail
+    tags: [atp, critical, auth]
+    mutating: true
+    steps:
+      # 1. La boîte e2e-<run id>@<domaine>, créée depuis api.mail.tm même. mail.tm répond 429
+      #    (trop de requêtes) quand on l'appelle trop souvent : on réessaie toutes les 5 s.
+      - goto: ${base.mailtm}/
+      - expect:
+          js: >-
+            async () => { const now = Date.now();
+            if (window.__e2eAt && now - window.__e2eAt < 5000) return false; window.__e2eAt = now;
+            try { const json = { 'Content-Type': 'application/json' };
+            if (!window.__e2eDomain) { const r = await fetch('/domains'); if (!r.ok) return false;
+              const d = await r.json(); const list = Array.isArray(d) ? d : (d['hydra:member'] || []);
+              const ok = list.find(x => x.isActive !== false); if (!ok) return false; window.__e2eDomain = ok.domain; }
+            const body = JSON.stringify({ address: 'e2e-${run.id}@' + window.__e2eDomain, password: '${env.HORIZON_SIGNUP_PASSWORD}' });
+            if (!window.__e2eAccount) { const r = await fetch('/accounts', { method: 'POST', headers: json, body }); if (!r.ok) return false;
+              window.__e2eAccount = (await r.json()).id; }
+            const t = await fetch('/token', { method: 'POST', headers: json, body }); if (!t.ok) return false;
+            window.__e2eToken = (await t.json()).token; return true; } catch (e) { return false; } }
+          timeout: 120s
+      - store: mail_domain
+        js: "() => window.__e2eDomain"
+      - store: mail_account
+        js: "() => window.__e2eAccount"
+      - store: mail_token
+        js: "() => window.__e2eToken"
+      # 2. L'inscription sur Horizon avec cette adresse.
+      - goto: ${base.editor}/login
+      - click: { role: button, name: Sign Up, exact: true }
+      - expect: { target: { role: heading, name: Create Account }, visible: true }
+      - fill: { label: Username }
+        value: e2e-${run.id}
+      - fill: { label: Email }
+        value: e2e-${run.id}@${var.mail_domain}
+      - fill: { label: Password, exact: true }
+        value: ${env.HORIZON_SIGNUP_PASSWORD}
+      - fill: { label: Confirm Password }
+        value: ${env.HORIZON_SIGNUP_PASSWORD}
+      - click: { role: button, name: Sign Up, exact: true }
+        expect_response: { url: "**/signup", method: POST, status: 2xx }
+      - expect: { url: "**/verify-email?email=*", timeout: 20s }
+      - expect: { target: { role: heading, name: Verify your email }, visible: true }
+      # 3. Le code : on relève la boîte toutes les 3 s jusqu'au mail.
+      - goto: ${base.mailtm}/
+      - expect:
+          js: >-
+            async () => { const now = Date.now();
+            if (window.__e2eMailAt && now - window.__e2eMailAt < 3000) return false; window.__e2eMailAt = now;
+            try { const headers = { Authorization: 'Bearer ${var.mail_token}' };
+            const r = await fetch('/messages', { headers }); if (!r.ok) return false;
+            const list = await r.json();
+            const items = Array.isArray(list) ? list : (list['hydra:member'] || []);
+            if (!items.length) return false;
+            const m = await fetch('/messages/' + items[0].id, { headers }); if (!m.ok) return false;
+            const message = await m.json();
+            const code = ((message.text || '') + ' ' + (message.intro || '')).match(/\b(\d{6})\b/);
+            if (code) window.__e2eCode = code[1]; return !!code; } catch (e) { return false; } }
+          timeout: 180s
+      - store: verification_code
+        js: "() => window.__e2eCode"
+      # 4. La validation sur Horizon.
+      - goto: ${base.editor}/verify-email?email=e2e-${run.id}%40${var.mail_domain}
+      # Le code tapé d'un coup dans la première case se répartit dans les 6 (comme un collage).
+      - fill: { css: "[data-scope=pin-input][data-part=input]", nth: first }
+        value: ${var.verification_code}
+      - click: { role: button, name: Verify email }
+        expect_response: { url: "**/auth/email/verify", method: POST, status: 2xx }
+      - expect: { target: { role: heading, name: Welcome back }, visible: true, timeout: 20s }
+      - click: { role: button, name: Logout }
+      - expect: { url: "**/login", timeout: 20s }
+    teardown:
+      # Quoi qu'il arrive, on repart sans session pour que F2 se connecte au compte de test.
+      - goto: ${base.editor}/login
+      - store: f1_logout
+        js: "() => fetch('${base.api}/logout', { method: 'POST', credentials: 'include' }).then(r => String(r.status))"
+    cleanup:
+      - goto: ${base.editor}/login
+      - store: f1_account
+        js: >-
+          async () => { if ('${var.mail_domain}' === 'none') return 'absent';
+          const api = '${base.api}';
+          const login = await fetch(api + '/login', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email: 'e2e-${run.id}@${var.mail_domain}', password: '${env.HORIZON_SIGNUP_PASSWORD}' }) });
+          if (login.status === 401) return 'absent';
+          if (!login.ok) return 'login ' + login.status;
+          const me = await (await fetch(api + '/users/me', { credentials: 'include' })).json();
+          const removed = await fetch(api + '/users/' + me.id, { method: 'DELETE', credentials: 'include' });
+          return removed.ok ? 'deleted' : 'delete ' + removed.status; }
+      # La boîte mail.tm : supprimée depuis son site (sans conséquence si elle n'existe pas).
+      - goto: ${base.mailtm}/
+      - store: f1_mailbox
+        js: "() => fetch('/accounts/${var.mail_account}', { method: 'DELETE', headers: { Authorization: 'Bearer ${var.mail_token}' } }).then(r => String(r.status), () => 'error')"
+      - expect: { js: "() => ['deleted', 'absent'].includes('${var.f1_account}')" }
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F2 · Connexion
+  #   Teste     : le formulaire de connexion de l'éditeur avec le compte de test (.env).
+  #   Vérifie   : POST /login 2xx, puis l'accueil « Welcome back » et « Create New Game ».
+  #   Note      : le launcher a sa propre connexion, testée en F71.
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F2-login
+    name: Connexion à l'éditeur avec le compte de test
+    tags: [atp, ui, auth]
+    steps:
+      - goto: ${base.editor}/
+      - fill: { label: Email }
+        value: ${env.HORIZON_EMAIL}
+      - fill: { label: Password, exact: true }
+        value: ${env.HORIZON_PASSWORD}
+      - click: { role: button, name: Sign In }
+        expect_response: { url: "**/login", method: POST, status: 2xx }
+      - expect: { target: { role: heading, name: Welcome back }, visible: true }
+      - expect: { target: { role: button, name: Create New Game, nth: first }, visible: true }
+
+  # ════════════════════════════════════════════════════════════════════════════ PROJET
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F3 · Créer un jeu
+  #   Teste     : « Create New Game » > nom > « Create Game ».
+  #   Vérifie   : POST /room 201, l'URL /editor?id=<projet>, puis la scène vide se charge :
+  #               Bevy logue « backend: BrowserWebGpu » et le viewport dessine la grille.
+  #   Écrit     : un projet e2e-<run id>. Nettoyage : supprimé en fin de run.
+  #   Capture   : screenshots/F3-create-game-empty-scene.png
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F3-create-game
+    name: Créer un nouveau jeu et ouvrir sa scène vide
+    tags: [atp, critical, editor]
+    mutating: true
+    requires_webgpu: true
+    depends_on: [F2-login]
+    steps:
+      - click: { role: button, name: Create New Game, nth: first }
+      - fill: { id: modal-game-name }
+        value: e2e-${run.id}
+      - click: { role: button, name: Create Game }
+        expect_response: { url: "**/room", method: POST, status: 201 }
+      - expect: { url: "**/editor?id=*", timeout: 20s }
+      - store: project_id
+        url_pattern: "id=([0-9a-f]+)"
+      - expect: { target: &canvas { id: scene-view-canvas }, visible: true }
+      # 60 s : le moteur wasm pèse lourd ; sur une connexion lente il met plus de 30 s à arriver.
+      - expect: { console: "backend: BrowserWebGpu", timeout: 60s }
+      - wait: 3s                 # laisse un plantage au démarrage apparaître ici
+      - expect: { target: *canvas, rendered: true }
+      - screenshot: empty-scene
+        of: *canvas
+    cleanup:
+      - goto: ${base.editor}/
+      - hover: { role: heading, name: "e2e-${run.id}", exact: true }
+      - click: { title: Delete Project, within: &project_card { css: div.group, has: { role: heading, name: "e2e-${run.id}", exact: true }, nth: first } }
+      - expect: { target: { role: heading, name: "e2e-${run.id}", exact: true }, count: 0 }
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F4 · Importer des assets
+  #   Teste     : Assets > « Import assets », pour les trois types que l'ATP cite (glb, png,
+  #               wasm) : un modèle 3D, deux images (texture et skybox), un script.
+  #   Vérifie   : chaque import appelle le serveur (lookup du catalogue pour le modèle et les
+  #               images, POST /script pour le wasm), ferme le dialogue, et l'asset apparaît
+  #               dans « My Assets ».
+  #   Constaté  : le 2026-11-21, le .wasm importé n'apparaît pas dans les assets (F4 KO). Le
+  #               code le confirme : l'import crée le document du script (script-service), mais
+  #               la liste vient de compile-service, qui ne connaît que les scripts faits dans
+  #               l'éditeur de nœuds. Le modèle et les images, vérifiés avant, sont bien là ;
+  #               seule F51 (qui attache ce script) dépend de F4.
+  #   Fichiers  : fixtures/e2e-cube.glb, e2e-checker.png (damier), e2e-skybox.png (bande de 6
+  #               faces), e2e-noop.wasm (script vide). python scripts/make_atp_fixtures.py.
+  #   Écrit     : des assets privés au projet (supprimés avec lui).
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F4-upload-assets
+    name: Importer des assets (modèle glb, textures png, script wasm)
+    tags: [atp, secondary, assets]
+    mutating: true
+    depends_on: [F3-create-game]
+    steps:
+      - click: { role: tab, name: Assets }
+      # Modèle 3D (type « model », sélectionné par défaut).
+      - click: &import_assets { role: button, name: Import assets }
+      - upload: { css: "input[type=file][accept*='.glb']" }
+        files: [fixtures/e2e-cube.glb]
+      - click: { role: button, name: Import model }
+        expect_response: { url: "**/catalog/*/lookup", method: POST, status: 2xx, timeout: 30s }
+      - expect: { target: { role: dialog }, count: 0, timeout: 60s }
+      # Texture du cube.
+      - click: *import_assets
+      - click: &type_texture { role: button, name: texture, exact: true, within: { role: dialog } }
+      - upload: &image_input { css: "input[type=file][accept*='image/png']" }
+        files: [fixtures/e2e-checker.png]
+      - click: &import_texture { role: button, name: Import texture }
+        expect_response: { url: "**/catalog/*/lookup", method: POST, status: 2xx, timeout: 30s }
+      - expect: { target: { role: dialog }, count: 0, timeout: 60s }
+      # Skybox de la caméra.
+      - click: *import_assets
+      - click: *type_texture
+      - upload: *image_input
+        files: [fixtures/e2e-skybox.png]
+      - click: *import_texture
+        expect_response: { url: "**/catalog/*/lookup", method: POST, status: 2xx, timeout: 30s }
+      - expect: { target: { role: dialog }, count: 0, timeout: 60s }
+      # Script wasm.
+      - click: *import_assets
+      - click: { role: button, name: script, exact: true, within: { role: dialog } }
+      - upload: { css: "input[type=file][accept*='.wasm']" }
+        files: [fixtures/e2e-noop.wasm]
+      - click: { role: button, name: Import script }
+        expect_response: { url: "**/script", method: POST, status: 2xx, timeout: 30s }
+      - expect: { target: { role: dialog }, count: 0, timeout: 60s }
+      - click: &my_assets { id: tab-mine }
+      - expect: { target: { role: listitem, has_text: e2e-cube }, visible: true, timeout: 30s }
+      - expect: { target: { role: listitem, has_text: e2e-checker }, visible: true, timeout: 30s }
+      - expect: { target: { role: listitem, has_text: e2e-skybox }, visible: true, timeout: 30s }
+      - expect: { target: &noop_script { css: "[id^=script-card-]", has_text: e2e-noop }, visible: true, timeout: 30s }
+      - screenshot: my-assets
+
+  # ════════════════════════════════════════════════════════════════════════════ SCÈNE
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F5 · Changer de vue dans la barre d'onglets
+  #   Teste     : les onglets Scene, Game et Scripting du panneau central.
+  #   Vérifie   : l'onglet cliqué devient actif et son contenu s'affiche (le viewport pour
+  #               Scene, l'éditeur de nœuds pour Scripting) ; on finit sur Scene.
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F5-select-view
+    name: Changer de vue (Scene, Game, Scripting)
+    tags: [atp, critical, editor]
+    depends_on: [F3-create-game]
+    steps:
+      - click: &tab_game { role: tab, name: Game, exact: true }
+      - expect: { target: { css: "[role=tab][class*='tab--active']", has_text: Game }, visible: true }
+      - click: &tab_scripting { role: tab, name: Scripting, exact: true }
+      - expect: { target: { css: "[role=tab][class*='tab--active']", has_text: Scripting }, visible: true }
+      - expect: { target: { css: ".svelte-flow" }, visible: true }
+      - screenshot: scripting
+      - click: &tab_scene { role: tab, name: Scene, exact: true }
+      - expect: { target: { css: "[role=tab][class*='tab--active']", has_text: Scene }, visible: true }
+      - expect: { target: *canvas, rendered: true }
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F6 · Glisser un asset dans la scène
+  #   Teste     : glisser le modèle e2e-cube de « My Assets » sur le viewport.
+  #   Vérifie   : un objet « Object » apparaît dans la hiérarchie.
+  #   Note      : la hiérarchie n'accepte que les prefabs ; un modèle simple se pose sur la scène.
+  #   Capture   : screenshots/F6-drag-asset-placed.png
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F6-drag-asset
+    name: Glisser-déposer un asset dans la scène
+    tags: [atp, critical, 3d, assets]
+    mutating: true
+    depends_on: [F3-create-game]   # le modèle importé par F4 ; F4 peut échouer sur le seul script
+    steps:
+      - click: { role: tab, name: Assets }
+      - click: *my_assets
+      - drag: { role: listitem, has_text: e2e-cube }
+        to: *canvas
+      - click: &tab_hierarchy { role: tab, name: Hierarchy }
+      # Le niveau 1 : la ligne « Object » elle-même, pas « Empty Object », son enfant (F12).
+      - expect: { target: &object_row { css: "[role=treeitem][aria-level='1']", within: &hierarchy { css: "[data-slot=hierarchy-view]" }, has_text: Object }, count: 1, timeout: 20s }
+      - wait: 2s                 # laisse voir le cube posé
+      - screenshot: placed
+        of: *canvas
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F7 · Sélectionner un objet
+  #   Teste     : cliquer l'objet dans la hiérarchie.
+  #   Vérifie   : la ligne est sélectionnée et l'Inspector affiche ses composants : Transform
+  #               (position X = 0) et Material (roughness).
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F7-select-object
+    name: Sélectionner un objet et voir ses propriétés
+    tags: [atp, critical, editor]
+    depends_on: [F6-drag-asset]
+    steps:
+      - select: *object_row
+      - expect: { target: &position_x { role: spinbutton, name: X, within: &position { css: div.flex-col, has: { css: ":scope > span", has_text: position }, nth: last } }, number: 0 }
+      - expect: { target: &roughness { role: spinbutton, name: roughness }, visible: true }
+      - screenshot: selected
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F8 · Ajouter un composant
+  #   Teste     : Inspector > « Add Component » > Physics, sur le cube.
+  #   Vérifie   : la carte Physics apparaît avec ses champs (collider, layer).
+  #   Pourquoi  : Physics sert ensuite à F36-F39, et CharacterController (F40) en dépend.
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F8-add-component
+    name: Ajouter un composant à un objet
+    tags: [atp, secondary, editor]
+    mutating: true
+    depends_on: [F7-select-object]
+    steps:
+      - select: *object_row
+      - click: &add_component { role: button, name: Add Component }
+      - click: { role: button, name: Physics, exact: true, within: &component_list { id: add-component-list } }
+      - expect: { target: &layer { role: spinbutton, name: layer }, visible: true }
+      - expect: { target: &collider { css: select, within: { css: div.flex-col, has: { css: ":scope > span", has_text: collider }, nth: last } }, value: cuboid }
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F9 · Ajouter une caméra
+  #   Teste     : clic droit dans la hiérarchie > Camera, puis la placer.
+  #   Vérifie   : une ligne « Camera » ; position (0, 1, 6), d'où elle cadre le cube.
+  #   Pourquoi  : à l'origine, la caméra serait dans les objets et le jeu n'afficherait rien.
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F9-add-camera
+    name: Ajouter une caméra dans la scène
+    tags: [atp, ui, 3d]
+    mutating: true
+    depends_on: [F3-create-game]
+    steps:
+      - click: *tab_hierarchy
+      - click: &tree_blank { css: "[data-slot=hierarchy-view]" }
+        button: right
+        position: { x: 100, y: 500 }
+      - click: { role: menuitem, name: Camera, exact: true }
+      - select: &camera_row { role: treeitem, within: *hierarchy, has_text: Camera }
+      - fill: &position_y { role: spinbutton, name: Y, within: *position }
+        value: "1"
+      - press: Enter
+        target: *position_y
+      - fill: &position_z { role: spinbutton, name: Z, within: *position }
+        value: "6"
+      - press: Enter
+        target: *position_z
+      - expect: { target: *position_z, number: 6 }
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F10 · Ajouter une PointLight
+  #   Teste     : clic droit > Point Light, placée au-dessus et devant le cube, en (0, 2, 2).
+  #   Vérifie   : une ligne « PointLight » ; position Y = 2.
+  #   Capture   : screenshots/F10-add-point-light-light.png (l'éclairage du cube)
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F10-add-point-light
+    name: Ajouter une PointLight dans la scène
+    tags: [atp, secondary, 3d, lighting]
+    mutating: true
+    depends_on: [F3-create-game]
+    steps:
+      - click: *tree_blank
+        button: right
+        position: { x: 100, y: 500 }
+      - click: { role: menuitem, name: Point Light, exact: true }
+      - select: &point_light_row { role: treeitem, within: *hierarchy, has_text: PointLight }
+      - fill: *position_y
+        value: "2"
+      - press: Enter
+        target: *position_y
+      - fill: *position_z
+        value: "2"
+      - press: Enter
+        target: *position_z
+      - expect: { target: *position_y, number: 2 }
+      - wait: 1s
+      - screenshot: light
+        of: *canvas
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F11 · Ajouter une DirectionalLight
+  #   Teste     : clic droit > Directional Light, inclinée de -45° autour de X (lumière rasante,
+  #               ombres visibles).
+  #   Vérifie   : une ligne « DirectionalLight » ; ombres actives par défaut (shadows_enabled).
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F11-add-directional-light
+    name: Ajouter une DirectionalLight dans la scène
+    tags: [atp, critical, 3d, lighting]
+    mutating: true
+    depends_on: [F3-create-game]
+    steps:
+      - click: *tree_blank
+        button: right
+        position: { x: 100, y: 500 }
+      - click: { role: menuitem, name: Directional Light, exact: true }
+      - select: &directional_light_row { role: treeitem, within: *hierarchy, has_text: DirectionalLight }
+      - fill: &rotation_x { role: spinbutton, name: X, within: &rotation { css: div.flex-col, has: { css: ":scope > span", has_text: rotation }, nth: last } }
+        value: "-45"
+      - press: Enter
+        target: *rotation_x
+      - expect: { target: *rotation_x, number: -45, tolerance: 0.01 }
+      - expect: { target: { css: "input[type=checkbox]", within: &shadows_row { css: "div.justify-between", has: { css: ":scope > span", has_text: shadows_enabled } } }, checked: true }
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F12 · Créer un enfant
+  #   Teste     : clic droit sur « Object » > Create Child.
+  #   Vérifie   : « Object » devient une branche (flèche de dépliage) ; dépliée, elle contient
+  #               « Empty Object » au niveau 2. On la replie ensuite.
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F12-create-child
+    name: Créer un enfant d'un objet dans la hiérarchie
+    tags: [atp, secondary, editor]
+    mutating: true
+    depends_on: [F6-drag-asset]
+    steps:
+      - click: *object_row
+        button: right
+      - click: { role: menuitem, name: Create Child, exact: true }
+      - expect: { target: { css: "[role=treeitem][aria-level='1'][aria-expanded]", within: *hierarchy, has_text: Object }, count: 1, timeout: 20s }
+      - click: &object_toggle { css: "[data-part=trigger]", within: *object_row, nth: first }
+      - expect: { target: { css: "[role=treeitem][aria-level='2']", within: *hierarchy, has_text: Empty Object }, visible: true }
+      - screenshot: child
+      - click: *object_toggle    # replie la branche : la ligne « Object » reprend sa hauteur
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F13 · Dupliquer un objet
+  #   Teste     : clic droit > Cube (primitive), puis clic droit sur sa ligne > Duplicate.
+  #   Vérifie   : 1 ligne « Cube », puis 2.
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F13-duplicate
+    name: Dupliquer un objet dans la hiérarchie
+    tags: [atp, critical, editor]
+    mutating: true
+    depends_on: [F3-create-game]
+    steps:
+      - click: *tree_blank
+        button: right
+        position: { x: 100, y: 500 }
+      - click: { role: menuitem, name: Cube, exact: true }
+      - expect: { target: &cube_rows { role: treeitem, within: *hierarchy, has_text: Cube }, count: 1, timeout: 20s }
+      - click: { role: treeitem, within: *hierarchy, has_text: Cube }
+        button: right
+      - click: { role: menuitem, name: Duplicate, exact: true }
+      - expect: { target: *cube_rows, count: 2 }
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F14 · Supprimer un objet
+  #   Teste     : clic droit sur la copie > Delete (l'ATP accepte la touche Suppr ou le menu).
+  #   Vérifie   : il reste 1 ligne « Cube ».
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F14-delete
+    name: Supprimer un objet dans la hiérarchie
+    tags: [atp, critical, editor]
+    mutating: true
+    depends_on: [F13-duplicate]
+    steps:
+      - click: { role: treeitem, within: *hierarchy, has_text: Cube, nth: last }
+        button: right
+      - click: { role: menuitem, name: Delete, exact: true }
+      - expect: { target: *cube_rows, count: 1 }
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F15 · Taille par l'Inspector
+  #   Teste     : Transform > scale de « Object » = (1,5 ; 1,5 ; 1,5).
+  #   Vérifie   : les trois valeurs sont relues dans l'Inspector.
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F15-scale-inspector
+    name: Changer la taille d'un objet dans l'Inspector
+    tags: [atp, critical, 3d, transform]
+    mutating: true
+    depends_on: [F6-drag-asset]
+    steps:
+      - select: *object_row
+      - fill: &scale_x { role: spinbutton, name: X, within: &scale { css: div.flex-col, has: { css: ":scope > span", has_text: scale }, nth: last } }
+        value: "1.5"
+      - press: Enter
+        target: *scale_x
+      - fill: &scale_y { role: spinbutton, name: Y, within: *scale }
+        value: "1.5"
+      - press: Enter
+        target: *scale_y
+      - fill: &scale_z { role: spinbutton, name: Z, within: *scale }
+        value: "1.5"
+      - press: Enter
+        target: *scale_z
+      - expect: { target: *scale_x, number: 1.5 }
+      - expect: { target: *scale_y, number: 1.5 }
+      - expect: { target: *scale_z, number: 1.5 }
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F16 · Position par l'Inspector
+  #   Teste     : Transform > position X = 1 (le cube s'écarte de l'origine).
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F16-position-inspector
+    name: Changer la position d'un objet dans l'Inspector
+    tags: [atp, critical, 3d, transform]
+    mutating: true
+    depends_on: [F6-drag-asset]
+    steps:
+      - select: *object_row
+      - fill: *position_x
+        value: "1"
+      - press: Enter
+        target: *position_x
+      - expect: { target: *position_x, number: 1 }
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F17 · Rotation par l'Inspector
+  #   Teste     : Transform > rotation Y = 45.
+  #   Note      : le moteur stocke un quaternion et réaffiche 45.000004 : tolérance 0,01.
+  #   Capture   : screenshots/F17-rotation-inspector-transformed.png
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F17-rotation-inspector
+    name: Changer la rotation d'un objet dans l'Inspector
+    tags: [atp, critical, 3d, transform]
+    mutating: true
+    depends_on: [F6-drag-asset]
+    steps:
+      - select: *object_row
+      - fill: &rotation_y { role: spinbutton, name: Y, within: *rotation }
+        value: "45"
+      - press: Enter
+        target: *rotation_y
+      - expect: { target: *rotation_y, number: 45, tolerance: 0.01 }
+      - screenshot: transformed
+        of: *canvas
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F18 · Changer le mesh
+  #   Teste     : sur le Cube (primitive), vider le champ Mesh puis y glisser le mesh
+  #               « Sphere » depuis Assets > Meshes.
+  #   Vérifie   : le champ affiche un mesh (plus de « Drop Mesh here ») ; le cube est devenu
+  #               une sphère (capture).
+  #   Note      : le champ n'accepte qu'un mesh glissé depuis l'onglet Meshes (depuis « My
+  #               Assets », un modèle se pose comme un nouvel objet).
+  #   Capture   : screenshots/F18-mesh-sphere.png
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F18-mesh
+    name: Changer le mesh d'un objet dans l'Inspector
+    tags: [atp, ui, 3d, assets]
+    mutating: true
+    depends_on: [F14-delete]
+    steps:
+      - select: { role: treeitem, within: *hierarchy, has_text: Cube }
+      - click: { role: button, name: Clear Mesh }
+      - expect: { target: &drop_mesh { text: Drop Mesh here }, visible: true }
+      - click: { role: tab, name: Assets }
+      - click: { id: tab-mesh }
+      - fill: &asset_search { placeholder: Search store... }
+        value: Sphere
+      - drag: { role: listitem, has_text: Sphere, nth: first }
+        to: *drop_mesh
+      - expect: { target: *drop_mesh, count: 0 }
+      - fill: *asset_search      # vide la recherche, partagée par tous les onglets d'Assets
+        value: ""
+      - click: *tab_hierarchy
+      - wait: 1s
+      - screenshot: sphere
+        of: *canvas
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F19 · Changer la texture
+  #   Teste     : Material > texture_id de « Object » : glisser la texture e2e-checker
+  #               (Assets > Textures) sur « Drop Texture here ».
+  #   Vérifie   : le champ affiche la texture (bouton « Clear Texture ») ; le cube est en damier.
+  #   Capture   : screenshots/F19-texture-checker.png
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F19-texture
+    name: Changer la texture d'un objet dans l'Inspector
+    tags: [atp, critical, 3d, material]
+    mutating: true
+    depends_on: [F6-drag-asset]
+    steps:
+      - select: *object_row
+      - expect: { target: &drop_texture { text: Drop Texture here }, visible: true }
+      # L'Inspector garde l'objet sélectionné pendant qu'on passe sur l'onglet Assets.
+      - click: { role: tab, name: Assets }
+      - click: &tab_textures { id: tab-texture }
+      - drag: { role: listitem, has_text: e2e-checker, nth: first }
+        to: *drop_texture
+      - expect: { target: &clear_texture { role: button, name: Clear Texture }, visible: true }
+      - click: *tab_hierarchy
+      - wait: 1s
+      - screenshot: checker
+        of: *canvas
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F20 · Changer la couleur
+  #   Teste     : Material > color de « Object » = doré (la couleur teinte la texture).
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F20-color
+    name: Changer la couleur d'un objet dans l'Inspector
+    tags: [atp, secondary, 3d, material]
+    mutating: true
+    depends_on: [F6-drag-asset]
+    steps:
+      - select: *object_row
+      - fill: &color_hex { css: "input[data-part=channel-input][type=text]:visible", within: { css: "[data-scope=color-picker][data-part=root]", has_text: color, nth: first } }
+        value: ${var.gold}
+      - press: Enter
+        target: *color_hex
+      - expect: { target: *color_hex, value: "${var.gold}" }
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F21 · Changer la rugosité
+  #   Teste     : Material > roughness de « Object » = 0,2 (surface plus brillante).
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F21-roughness
+    name: Changer la rugosité d'un objet dans l'Inspector
+    tags: [atp, compat, 3d, material]
+    mutating: true
+    depends_on: [F6-drag-asset]
+    steps:
+      - select: *object_row
+      - fill: *roughness
+        value: "0.2"
+      - press: Enter
+        target: *roughness
+      - expect: { target: *roughness, number: 0.2 }
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # Gizmos (F22-F24) : comment le test vise une poignée
+  #   La touche F (focus) recentre la caméra de l'éditeur sur l'objet sélectionné, sans changer
+  #   son orientation : le centre du gizmo est alors au centre du viewport. La caméra n'a pas
+  #   encore tourné (F56 vient plus tard) : elle regarde la scène depuis (+X, +Y, +Z), et l'axe
+  #   X du monde part vers la droite et 30° vers le bas à l'écran. Le gizmo mesure 75 px.
+  #   Chaque feature vérifie que la valeur du Transform a changé, sans exiger un chiffre précis.
+  # ──────────────────────────────────────────────────────────────────────────────────────
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F22 · Taille par le gizmo
+  #   Teste     : outil Échelle, puis tirer la poignée X (à 45 px du centre, le long de l'axe)
+  #               vers l'extérieur.
+  #   Vérifie   : scale X n'est plus 1,5.
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F22-scale-gizmo
+    name: Changer la taille d'un objet avec le gizmo
+    tags: [atp, critical, 3d, transform, gizmo]
+    mutating: true
+    depends_on: [F15-scale-inspector]
+    steps:
+      - click: *tab_scene
+      - select: *object_row
+      - click: { css: "label:has(input[value=scale])" }
+      - expect: { target: { css: "input[value=scale]" }, checked: true }
+      # Sur l'arbre (pas dans un champ) : la touche F recentre la caméra sur la sélection.
+      - press: f
+        target: *hierarchy
+      - wait: 1s
+      - drag: *canvas
+        from_offset: { x: 39, y: 22 }
+        to: *canvas
+        to_offset: { x: 104, y: 60 }
+        steps: 20
+      - expect:
+          js: "() => { const s = [...document.querySelectorAll('span')].find(e => e.textContent.trim() === 'scale'); const v = s && s.parentElement.querySelectorAll('input'); return !!v && v.length >= 3 && Math.abs(parseFloat(v[0].value) - 1.5) > 0.01; }"
+      - screenshot: scaled
+        of: *canvas
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F23 · Position par le gizmo
+  #   Teste     : outil Translation, puis tirer le cercle central (déplacement dans le plan de
+  #               la vue).
+  #   Vérifie   : la position n'est plus (1, 0, 0).
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F23-position-gizmo
+    name: Changer la position d'un objet avec le gizmo
+    tags: [atp, ui, 3d, transform, gizmo]
+    mutating: true
+    depends_on: [F16-position-inspector]
+    steps:
+      - click: *tab_scene
+      - select: *object_row
+      - click: { css: "label:has(input[value=translate])" }
+      - expect: { target: { css: "input[value=translate]" }, checked: true }
+      - press: f
+        target: *hierarchy
+      - wait: 1s
+      - drag: *canvas
+        to: *canvas
+        to_offset: { x: 80, y: -40 }
+        steps: 20
+      - expect:
+          js: "() => { const s = [...document.querySelectorAll('span')].find(e => e.textContent.trim() === 'position'); const v = s && s.parentElement.querySelectorAll('input'); return !!v && v.length >= 3 && (Math.abs(parseFloat(v[0].value) - 1) > 0.01 || Math.abs(parseFloat(v[1].value)) > 0.01 || Math.abs(parseFloat(v[2].value)) > 0.01); }"
+      - screenshot: moved
+        of: *canvas
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F24 · Rotation par le gizmo
+  #   Teste     : outil Rotation, puis tirer depuis le centre (la sphère de rotation libre).
+  #   Vérifie   : la rotation n'est plus (0, 45, 0).
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F24-rotation-gizmo
+    name: Changer la rotation d'un objet avec le gizmo
+    tags: [atp, ui, 3d, transform, gizmo]
+    mutating: true
+    depends_on: [F17-rotation-inspector]
+    steps:
+      - click: *tab_scene
+      - select: *object_row
+      - click: { css: "label:has(input[value=rotate])" }
+      - expect: { target: { css: "input[value=rotate]" }, checked: true }
+      - press: f
+        target: *hierarchy
+      - wait: 1s
+      - drag: *canvas
+        to: *canvas
+        to_offset: { x: 60, y: 30 }
+        steps: 20
+      - expect:
+          js: "() => { const s = [...document.querySelectorAll('span')].find(e => e.textContent.trim() === 'rotation'); const v = s && s.parentElement.querySelectorAll('input'); return !!v && v.length >= 3 && (Math.abs(parseFloat(v[0].value)) > 0.5 || Math.abs(parseFloat(v[1].value) - 45) > 0.5 || Math.abs(parseFloat(v[2].value)) > 0.5); }"
+      - screenshot: rotated
+        of: *canvas
+    teardown:
+      # On rend la translation à l'outil : c'est l'outil par défaut.
+      - click: { css: "label:has(input[value=translate])" }
+
+  # ════════════════════════════════════════════════════════════════════════════ COMPOSANTS
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F25 à F29 · PointLight : couleur, intensité, portée, rayon, ombres
+  #   Teste     : chaque champ du composant PointLight, sur la lumière ajoutée en F10.
+  #   Vérifie   : la valeur saisie est relue dans l'Inspector ; pour les ombres, l'interrupteur
+  #               se désactive puis se réactive (« Enable or disable »).
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F25-point-light-color
+    name: Changer la couleur d'une PointLight
+    tags: [atp, secondary, 3d, lighting]
+    mutating: true
+    depends_on: [F10-add-point-light]
+    steps:
+      - select: *point_light_row
+      - fill: *color_hex
+        value: ${var.warm}
+      - press: Enter
+        target: *color_hex
+      - expect: { target: *color_hex, value: "${var.warm}" }
+
+  - id: F26-point-light-intensity
+    name: Changer l'intensité d'une PointLight
+    tags: [atp, critical, 3d, lighting]
+    mutating: true
+    depends_on: [F10-add-point-light]
+    steps:
+      - select: *point_light_row
+      - fill: &intensity { role: spinbutton, name: intensity }
+        value: "2000"
+      - press: Enter
+        target: *intensity
+      - expect: { target: *intensity, number: 2000 }
+
+  - id: F27-point-light-range
+    name: Changer la portée d'une PointLight
+    tags: [atp, critical, 3d, lighting]
+    mutating: true
+    depends_on: [F10-add-point-light]
+    steps:
+      - select: *point_light_row
+      - fill: &range { role: spinbutton, name: range }
+        value: "15"
+      - press: Enter
+        target: *range
+      - expect: { target: *range, number: 15 }
+
+  - id: F28-point-light-radius
+    name: Changer le rayon d'une PointLight
+    tags: [atp, ui, 3d, lighting]
+    mutating: true
+    depends_on: [F10-add-point-light]
+    steps:
+      - select: *point_light_row
+      - fill: &radius { role: spinbutton, name: radius }
+        value: "0.3"
+      - press: Enter
+        target: *radius
+      - expect: { target: *radius, number: 0.3 }
+
+  - id: F29-point-light-shadows
+    name: Activer ou désactiver les ombres d'une PointLight
+    tags: [atp, secondary, 3d, lighting]
+    mutating: true
+    depends_on: [F10-add-point-light]
+    steps:
+      - select: *point_light_row
+      - expect: { target: &shadows_checkbox { css: "input[type=checkbox]", within: *shadows_row }, checked: true }
+      - click: &shadows_switch { css: "[data-slot=switch]", within: *shadows_row }
+      - expect: { target: *shadows_checkbox, checked: false }
+      - click: *shadows_switch
+      - expect: { target: *shadows_checkbox, checked: true }
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F30 à F32 · DirectionalLight : couleur, éclairement, ombres (lumière de F11)
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F30-directional-light-color
+    name: Changer la couleur d'une DirectionalLight
+    tags: [atp, critical, 3d, lighting]
+    mutating: true
+    depends_on: [F11-add-directional-light]
+    steps:
+      - select: *directional_light_row
+      - fill: *color_hex
+        value: ${var.sun}
+      - press: Enter
+        target: *color_hex
+      - expect: { target: *color_hex, value: "${var.sun}" }
+
+  - id: F31-directional-light-illuminance
+    name: Changer l'éclairement d'une DirectionalLight
+    tags: [atp, ui, 3d, lighting]
+    mutating: true
+    depends_on: [F11-add-directional-light]
+    steps:
+      - select: *directional_light_row
+      - fill: &illuminance { role: spinbutton, name: illuminance }
+        value: "8000"
+      - press: Enter
+        target: *illuminance
+      - expect: { target: *illuminance, number: 8000 }
+
+  - id: F32-directional-light-shadows
+    name: Activer ou désactiver les ombres d'une DirectionalLight
+    tags: [atp, critical, 3d, lighting]
+    mutating: true
+    depends_on: [F11-add-directional-light]
+    steps:
+      - select: *directional_light_row
+      - expect: { target: *shadows_checkbox, checked: true }
+      - click: *shadows_switch
+      - expect: { target: *shadows_checkbox, checked: false }
+      - click: *shadows_switch
+      - expect: { target: *shadows_checkbox, checked: true }
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F33 à F35 · Camera : champ de vision, skybox, couleur de fond (caméra de F9)
+  #   F34       : la skybox est e2e-skybox.png, une bande verticale des 6 faces d'un cube,
+  #               le format que le jeu attend (une image ordinaire laisse le jeu noir, voir
+  #               ENGINE-skybox-texture dans engine.yaml). Elle se voit en jeu (F57).
+  #   F35       : la couleur de fond ne s'affiche qu'en jeu, et seulement là où la skybox ne
+  #               couvre rien : le test vérifie la valeur saisie.
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F33-camera-fov
+    name: Changer le champ de vision (FOV) d'une caméra
+    tags: [atp, secondary, 3d, camera]
+    mutating: true
+    depends_on: [F9-add-camera]
+    steps:
+      - select: *camera_row
+      - fill: &fov { role: spinbutton, name: fov }
+        value: "70"
+      - press: Enter
+        target: *fov
+      - expect: { target: *fov, number: 70 }
+
+  - id: F34-camera-skybox
+    name: Changer la skybox d'une caméra
+    tags: [atp, critical, 3d, camera]
+    mutating: true
+    depends_on: [F9-add-camera]
+    steps:
+      - select: *camera_row
+      - expect: { target: *drop_texture, visible: true }
+      - click: { role: tab, name: Assets }
+      - click: *tab_textures
+      - drag: { role: listitem, has_text: e2e-skybox, nth: first }
+        to: *drop_texture
+      - expect: { target: *clear_texture, visible: true }
+      - click: *tab_hierarchy
+
+  - id: F35-camera-clear-color
+    name: Changer la couleur de fond d'une caméra
+    tags: [atp, ui, 3d, camera]
+    mutating: true
+    depends_on: [F9-add-camera]
+    steps:
+      - select: *camera_row
+      - fill: &clear_color { css: "input[data-part=channel-input][type=text]:visible", within: { css: "[data-scope=color-picker][data-part=root]", has_text: clear_color } }
+        value: ${var.sky}
+      - press: Enter
+        target: *clear_color
+      - expect: { target: *clear_color, value: "${var.sky}" }
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F36 à F39 · Physics : forme du collider, collisions, gravité, couche (composant de F8)
+  #   Les interrupteurs sont basculés puis remis à leur état d'origine (« Enable or
+  #   disable »), pour que la scène reste stable en jeu.
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F36-physics-collider
+    name: Changer le type de collider d'un composant Physics
+    tags: [atp, secondary, physics]
+    mutating: true
+    depends_on: [F8-add-component]
+    steps:
+      - select: *object_row
+      - choose: *collider
+        option: sphere
+      - expect: { target: *collider, value: sphere }
+
+  - id: F37-physics-collisions
+    name: Activer ou désactiver les collisions d'un composant Physics
+    tags: [atp, critical, physics]
+    mutating: true
+    depends_on: [F8-add-component]
+    steps:
+      - select: *object_row
+      - expect: { target: &collisions_checkbox { css: "input[type=checkbox]", within: &collisions_row { css: "div.justify-between", has: { css: ":scope > span", has_text: collisions } } }, checked: true }
+      - click: &collisions_switch { css: "[data-slot=switch]", within: *collisions_row }
+      - expect: { target: *collisions_checkbox, checked: false }
+      - click: *collisions_switch
+      - expect: { target: *collisions_checkbox, checked: true }
+
+  - id: F38-physics-gravity
+    name: Activer ou désactiver la gravité d'un composant Physics
+    tags: [atp, ui, physics]
+    mutating: true
+    depends_on: [F8-add-component]
+    steps:
+      - select: *object_row
+      - expect: { target: &gravity_checkbox { css: "input[type=checkbox]", within: &gravity_row { css: "div.justify-between", has: { css: ":scope > span", has_text: gravity } } }, checked: false }
+      - click: &gravity_switch { css: "[data-slot=switch]", within: *gravity_row }
+      - expect: { target: *gravity_checkbox, checked: true }
+      - click: *gravity_switch
+      - expect: { target: *gravity_checkbox, checked: false }
+
+  - id: F39-physics-layer
+    name: Changer la couche d'un composant Physics
+    tags: [atp, critical, physics]
+    mutating: true
+    depends_on: [F8-add-component]
+    steps:
+      - select: *object_row
+      - fill: *layer
+        value: "2"
+      - press: Enter
+        target: *layer
+      - expect: { target: *layer, number: 2 }
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F40 à F50 · CharacterController (sur « Object », qui a déjà Physics)
+  #   F40 ajoute le composant (prérequis de l'ATP) puis change la vitesse ; les suivantes
+  #   changent un champ chacune.
+  #   Touches   : le contrôleur prend les flèches (↑ ↓ ← →) et J pour sauter. Chaque touche
+  #               se choisit sur le petit clavier qui s'ouvre sous le champ.
+  #   En jeu    : avec sa gravité, l'objet tombe (il n'y a pas de sol) ; le jeu de F57 se voit
+  #               quand même grâce à la sphère et à la skybox.
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F40-character-move-speed
+    name: Changer la vitesse d'un CharacterController
+    tags: [atp, secondary, physics, character]
+    mutating: true
+    depends_on: [F8-add-component]
+    steps:
+      - select: *object_row
+      - click: *add_component
+      - click: { role: button, name: CharacterController, exact: true, within: *component_list }
+      - fill: &move_speed { role: spinbutton, name: move_speed }
+        value: "8"
+      - press: Enter
+        target: *move_speed
+      - expect: { target: *move_speed, number: 8 }
+
+  - id: F41-character-gravity
+    name: Changer la gravité d'un CharacterController
+    tags: [atp, critical, physics, character]
+    mutating: true
+    depends_on: [F40-character-move-speed]
+    steps:
+      - select: *object_row
+      - fill: &character_gravity { role: spinbutton, name: gravity }
+        value: "4.9"
+      - press: Enter
+        target: *character_gravity
+      - expect: { target: *character_gravity, number: 4.9 }
+
+  - id: F42-character-jump-height
+    name: Changer la hauteur de saut d'un CharacterController
+    tags: [atp, critical, physics, character]
+    mutating: true
+    depends_on: [F40-character-move-speed]
+    steps:
+      - select: *object_row
+      - fill: &jump_height { role: spinbutton, name: jump_height }
+        value: "2.5"
+      - press: Enter
+        target: *jump_height
+      - expect: { target: *jump_height, number: 2.5 }
+
+  - id: F43-character-max-slope
+    name: Changer la pente maximale d'un CharacterController
+    tags: [atp, critical, physics, character]
+    mutating: true
+    depends_on: [F40-character-move-speed]
+    steps:
+      - select: *object_row
+      - fill: &max_slope { role: spinbutton, name: max_slope_angle }
+        value: "30"
+      - press: Enter
+        target: *max_slope
+      - expect: { target: *max_slope, number: 30 }
+
+  - id: F44-character-rotate-to-movement
+    name: Activer ou désactiver « rotate to movement » d'un CharacterController
+    tags: [atp, secondary, physics, character]
+    mutating: true
+    depends_on: [F40-character-move-speed]
+    steps:
+      - select: *object_row
+      - expect: { target: &rotate_checkbox { css: "input[type=checkbox]", within: &rotate_row { css: "div.justify-between", has: { css: ":scope > span", has_text: rotate_to_movement } } }, checked: true }
+      - click: &rotate_switch { css: "[data-slot=switch]", within: *rotate_row }
+      - expect: { target: *rotate_checkbox, checked: false }
+      - click: *rotate_switch
+      - expect: { target: *rotate_checkbox, checked: true }
+
+  - id: F45-character-rotation-offset
+    name: Changer le décalage de rotation d'un CharacterController
+    tags: [atp, ui, physics, character]
+    mutating: true
+    depends_on: [F40-character-move-speed]
+    steps:
+      - select: *object_row
+      - fill: &rotation_offset { role: spinbutton, name: rotation_offset }
+        value: "90"
+      - press: Enter
+        target: *rotation_offset
+      - expect: { target: *rotation_offset, number: 90 }
+
+  - id: F46-character-key-forward
+    name: Changer la touche « avancer » d'un CharacterController
+    tags: [atp, secondary, physics, character]
+    mutating: true
+    depends_on: [F40-character-move-speed]
+    steps:
+      - select: *object_row
+      - click: &key_forward { role: button, nth: first, within: &key_forward_field { css: div.flex-col, has: { css: ":scope > span", has_text: key_forward }, nth: last } }
+      - click: { role: button, name: "↑", exact: true, within: *key_forward_field }
+      - expect: { target: *key_forward, text: "↑" }
+
+  - id: F47-character-key-backward
+    name: Changer la touche « reculer » d'un CharacterController
+    tags: [atp, critical, physics, character]
+    mutating: true
+    depends_on: [F40-character-move-speed]
+    steps:
+      - select: *object_row
+      - click: &key_backward { role: button, nth: first, within: &key_backward_field { css: div.flex-col, has: { css: ":scope > span", has_text: key_backward }, nth: last } }
+      - click: { role: button, name: "↓", exact: true, within: *key_backward_field }
+      - expect: { target: *key_backward, text: "↓" }
+
+  - id: F48-character-key-left
+    name: Changer la touche « gauche » d'un CharacterController
+    tags: [atp, secondary, physics, character]
+    mutating: true
+    depends_on: [F40-character-move-speed]
+    steps:
+      - select: *object_row
+      - click: &key_left { role: button, nth: first, within: &key_left_field { css: div.flex-col, has: { css: ":scope > span", has_text: key_left }, nth: last } }
+      - click: { role: button, name: "←", exact: true, within: *key_left_field }
+      - expect: { target: *key_left, text: "←" }
+
+  - id: F49-character-key-right
+    name: Changer la touche « droite » d'un CharacterController
+    tags: [atp, critical, physics, character]
+    mutating: true
+    depends_on: [F40-character-move-speed]
+    steps:
+      - select: *object_row
+      - click: &key_right { role: button, nth: first, within: &key_right_field { css: div.flex-col, has: { css: ":scope > span", has_text: key_right }, nth: last } }
+      - click: { role: button, name: "→", exact: true, within: *key_right_field }
+      - expect: { target: *key_right, text: "→" }
+
+  - id: F50-character-key-jump
+    name: Changer la touche « sauter » d'un CharacterController
+    tags: [atp, ui, physics, character]
+    mutating: true
+    depends_on: [F40-character-move-speed]
+    steps:
+      - select: *object_row
+      - click: &key_jump { role: button, nth: first, within: &key_jump_field { css: div.flex-col, has: { css: ":scope > span", has_text: key_jump }, nth: last } }
+      - click: { role: button, name: J, exact: true, within: *key_jump_field }
+      - expect: { target: *key_jump, text: J }
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F51 · Script dans un composant Script
+  #   Teste     : Inspector > Add Component > Script sur « Object », puis glisser le script
+  #               e2e-noop (importé en F4) depuis Assets > Scripts sur « Drop Script here ».
+  #   Vérifie   : le champ id affiche le script (bouton « Clear Script »).
+  #   Pourquoi  : e2e-noop exporte une fonction run vide : il tourne en jeu sans rien changer.
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F51-script-component
+    name: Ajouter et changer le script d'un composant Script
+    tags: [atp, secondary, script]
+    mutating: true
+    depends_on: [F7-select-object, F4-upload-assets]
+    steps:
+      - click: *tab_hierarchy
+      - select: *object_row
+      - click: *add_component
+      - click: { role: button, name: Script, exact: true, within: *component_list }
+      - expect: { target: &drop_script { text: Drop Script here }, visible: true }
+      - click: { role: tab, name: Assets }
+      - click: { id: tab-script }
+      - drag: *noop_script
+        to: *drop_script
+      - expect: { target: *drop_script, count: 0 }
+      - expect: { target: { role: button, name: Clear Script }, count: 1 }
+      - click: *tab_hierarchy
+
+  # ════════════════════════════════════════════════════════════════════════════ ÉDITEUR
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F52 · Sélection multiple dans la scène
+  #   Teste     : en mode Select, tirer un rectangle sur le viewport autour du cube.
+  #   Vérifie   : plusieurs lignes de la hiérarchie sont sélectionnées en même temps (au moins
+  #               « Object » et son enfant, qui sont au même endroit).
+  #   Capture   : screenshots/F52-multi-select-selection.png
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F52-multi-select
+    name: Sélectionner plusieurs objets dans la scène
+    tags: [atp, compat, 3d, editor]
+    depends_on: [F12-create-child]
+    steps:
+      - click: *tab_scene
+      - click: { css: "label:has(input[value=select])" }
+      - expect: { target: { css: "input[value=select]" }, checked: true }
+      - drag: *canvas
+        from_offset: { x: -320, y: -230 }
+        to: *canvas
+        to_offset: { x: 320, y: 230 }
+        steps: 20
+      - expect:
+          js: "() => document.querySelectorAll('[data-slot=hierarchy-view] [role=treeitem][aria-selected=true]').length >= 2"
+      - screenshot: selection
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F53 · Lumière ambiante
+  #   Teste     : Game settings (en haut à droite) > curseur « Ambient light », poussé au
+  #               maximum au clavier (touche Fin).
+  #   Vérifie   : le curseur affiche 1000 (500 par défaut) ; la scène s'éclaircit (capture).
+  #   Capture   : screenshots/F53-ambient-light-brighter.png
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F53-ambient-light
+    name: Changer la lumière ambiante du jeu
+    tags: [atp, critical, 3d, settings]
+    mutating: true
+    depends_on: [F3-create-game]
+    steps:
+      # Le bouton est un <div> (déclencheur Ark), sans rôle « button » : on le vise par sa classe.
+      - click: &game_settings { css: "[data-scope=dialog][data-part=trigger]", has_text: Game settings }
+      - expect: { target: &settings_dialog { role: dialog, name: Game settings }, visible: true }
+      - press: End
+        target: { role: slider, name: Ambient light }
+      - expect: { target: { css: "[data-slot=slider-value]", within: *settings_dialog }, number: 1000 }
+      - screenshot: brighter
+    teardown:
+      - press: Escape            # ferme Game settings
+      - expect: { target: { role: dialog }, count: 0 }
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F54 · Image de chargement
+  #   Teste     : dans Game settings, le champ « Loading image » : choisir e2e-loading.png.
+  #   Vérifie   : l'aperçu « Loading screen » s'affiche dans le champ.
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F54-loading-image
+    name: Ajouter l'image de chargement du jeu
+    tags: [atp, ui, settings]
+    mutating: true
+    depends_on: [F3-create-game]
+    steps:
+      - click: *game_settings
+      - expect: { target: *settings_dialog, visible: true }
+      - upload: { css: "input[type=file][accept='image/*']", within: *settings_dialog }
+        files: [fixtures/e2e-loading.png]
+      - expect: { target: { role: img, name: Loading screen }, visible: true }
+      - screenshot: settings
+    teardown:
+      - press: Escape            # ferme Game settings
+      - expect: { target: { role: dialog }, count: 0 }
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F55 · Thème clair / sombre
+  #   Teste     : le soleil puis la lune du sélecteur de thème, en haut à droite.
+  #   Vérifie   : la page passe en thème clair (classe « light ») puis revient en sombre.
+  #   Capture   : screenshots/F55-theme-light.png
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F55-theme
+    name: Changer le thème de l'éditeur (clair / sombre)
+    tags: [atp, ui, editor]
+    depends_on: [F3-create-game]
+    steps:
+      - click: { role: radio, name: Light mode }
+      - expect: { js: "() => document.documentElement.classList.contains('light')" }
+      - wait: 1s
+      - screenshot: light
+      - click: { role: radio, name: Dark mode }
+      - expect: { js: "() => !document.documentElement.classList.contains('light')" }
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F56 · Se déplacer dans la scène
+  #   Teste     : clic droit maintenu en tirant la souris (regarder autour), puis les touches de
+  #               déplacement maintenues : Z (avancer) et D (droite) sur un clavier AZERTY.
+  #   Vérifie   : la position de la caméra de l'éditeur a changé. L'éditeur la retient par
+  #               projet dans le localStorage (« camera-per-room ») : on la lit avant et après.
+  #   Note      : le moteur lit les touches par leur position physique (KeyW, KeyD) : c'est
+  #               Z et D en AZERTY, W et D en QWERTY.
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F56-move-in-scene
+    name: Se déplacer dans la scène (souris et clavier)
+    tags: [atp, secondary, 3d, editor]
+    depends_on: [F3-create-game]
+    steps:
+      - click: *tab_scene
+      - store: camera_before
+        js: "() => JSON.stringify((JSON.parse(localStorage.getItem('camera-per-room') || '{}')['${var.project_id}'] || {}).position || null)"
+      - drag: *canvas
+        from_offset: { x: -150, y: 0 }
+        to: *canvas
+        to_offset: { x: -30, y: 20 }
+        button: right
+        steps: 20
+      - press: KeyW
+        hold: 1s
+      - press: KeyD
+        hold: 500ms
+      - expect:
+          js: "() => JSON.stringify((JSON.parse(localStorage.getItem('camera-per-room') || '{}')['${var.project_id}'] || {}).position || null) !== '${var.camera_before}'"
+          timeout: 5s
+      - screenshot: moved
+        of: *canvas
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F57 · Lancer le jeu dans l'éditeur
+  #   Teste     : « Start » dans la barre d'outils.
+  #   Vérifie   : le jeu se charge (bouton Stop), son canvas dessine la scène vue par la
+  #               caméra (la sphère, la skybox, le cube qui tombe) ; Stop l'arrête.
+  #   Capture   : screenshots/F57-play-in-editor-game.png
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F57-play-in-editor
+    name: Lancer le jeu dans l'éditeur
+    tags: [atp, critical, 3d, play]
+    depends_on: [F9-add-camera, F11-add-directional-light]
+    requires_webgpu: true
+    steps:
+      - click: &play { role: button, name: Play, exact: true }
+      # 60 s : le jeu se télécharge au premier lancement, long sur une connexion lente.
+      - expect: { target: &stop { role: button, name: Stop, exact: true }, visible: true, timeout: 60s }
+      - expect: { target: &game_canvas { id: game-view-canvas }, rendered: true, timeout: 30s }
+      - screenshot: game
+        of: *game_canvas
+      - wait: 3s                 # laisse voir le jeu tourner
+      - click: *stop
+      - expect: { target: &stopped { css: "div.pointer-events-none:has(> button[aria-label=Stop])" }, count: 1 }
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F58 · Indicateur de performances en jeu
+  #   Teste     : relancer le jeu, puis Game settings > « Performance Indicator ».
+  #   Vérifie   : le panneau « Performance » s'affiche sur le jeu, avec les FPS.
+  #   Capture   : screenshots/F58-performance-overlay.png
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F58-performance
+    name: Afficher les performances pendant le jeu
+    tags: [atp, secondary, play]
+    depends_on: [F57-play-in-editor]
+    requires_webgpu: true
+    steps:
+      - click: *play
+      - expect: { target: *stop, visible: true, timeout: 60s }
+      - click: *game_settings
+      - expect: { target: { css: "input[type=checkbox]", within: &perf_row { css: "div.justify-between", has_text: Performance Indicator } }, checked: false }
+      - click: { css: "[data-slot=switch]", within: *perf_row }
+      - press: Escape
+      - expect: { target: { text: FPS, exact: true, nth: first }, visible: true, timeout: 15s }
+      - wait: 2s
+      - screenshot: overlay
+        of: *game_canvas
+      - click: *stop
+      - expect: { target: *stopped, count: 1 }
+
+  # ════════════════════════════════════════════════════════════════════════════ SCRIPTS
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F59 · Créer un script
+  #   Teste     : onglet Scripting, nommer le script, y mettre un nœud Rotate relié au départ
+  #               « On Every Frame », puis « Save ».
+  #   Vérifie   : « Script saved » (le serveur a compilé le graphe en wasm) ; le champ du nom
+  #               devient « Editing e2e-atp-<run id> » : c'est ce script que la suite modifie.
+  #   Pourquoi  : un script sans aucun nœud relié au départ est refusé (« every trigger node is
+  #               empty ») : le plus petit script enregistrable a un nœud.
+  #   Écrit     : un script dans le projet (supprimé avec lui).
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F59-create-script
+    name: Créer un script avec l'éditeur de nœuds
+    tags: [atp, ui, script]
+    mutating: true
+    depends_on: [F3-create-game]
+    steps:
+      - click: *tab_scripting
+      # Un script neuf contient déjà le nœud de départ « On Every Frame ».
+      - expect: { target: { css: ".svelte-flow__node-on_every_frame_node" }, visible: true }
+      - fill: { label: Script name }
+        value: e2e-atp-${run.id}
+      # Le canevas s'ouvre très zoomé : on dézoome deux fois pour avoir la place de poser les
+      # nœuds sans qu'ils se recouvrent.
+      - click: &zoom_out { css: ".svelte-flow__controls-zoomout" }
+      - click: *zoom_out
+      - click: &add_node { role: button, name: Add node }
+      - fill: &node_search { placeholder: Search nodes... }
+        value: Rotate
+      - click: { css: "[role=button]", has_text: Rotate the object }
+      - press: Escape
+      - expect: { target: &rotate_node { css: ".svelte-flow__node-rotate_node" }, count: 1 }
+      # `steps` : l'éditeur de nœuds ne suit qu'un glissé fait de petits mouvements.
+      - drag: { css: ".svelte-flow__node-rotate_node .dragHandle" }
+        to: &pane { css: ".svelte-flow__pane" }
+        to_position: { x: 520, y: 170 }
+        steps: 12
+      - drag: { css: "[data-handleid=on_every_frame_node_source_1]" }
+        to: { css: "[data-handleid=rotate_node_target_1]" }
+        steps: 12
+      - expect: { target: &edges { css: ".svelte-flow__edge" }, count: 1 }
+      - click: &save_script { role: button, name: Save, exact: true }
+      - expect: { target: &script_saved { text: Script saved, nth: first }, visible: true, timeout: 60s }
+      - expect: { target: { label: Script being edited }, text: "e2e-atp-${run.id}" }
+    teardown:
+      - press: Escape            # ferme un éventuel « Save failed », qui bloquerait la suite
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F60 · Ajouter un nœud
+  #   Teste     : « Add node » > recherche « Value » > clic sur la carte.
+  #   Vérifie   : le nœud Value est sur le canevas ; on le pose sous Rotate (il arrive au
+  #               centre, près des autres).
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F60-add-node
+    name: Ajouter un nœud dans un script
+    tags: [atp, secondary, script]
+    depends_on: [F59-create-script]
+    steps:
+      - click: *tab_scripting
+      - click: *add_node
+      - fill: *node_search
+        value: Value
+      - click: { css: "[role=button]", has_text: A literal value. }
+      - press: Escape
+      - expect: { target: &value_node { css: ".svelte-flow__node-value_node" }, count: 1 }
+      # Rotate, sélectionné par son glissé en F59, passe au-dessus des autres nœuds et peut
+      # cacher Value : un clic dans le vide désélectionne tout avant de déplacer Value.
+      - click: *pane
+        position: { x: 300, y: 700 }
+      # Sous Rotate et à droite de On Every Frame : le fil Value ─▶ Rotate passera dans le
+      # vide, là où F63 clique pour le sélectionner.
+      - drag: { css: ".svelte-flow__node-value_node .dragHandle" }
+        to: *pane
+        to_position: { x: 470, y: 520 }
+        steps: 12
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F61 · Supprimer un nœud
+  #   Teste     : ajouter un nœud Translate, le sélectionner, puis l'icône corbeille (en bas à
+  #               gauche du canevas).
+  #   Vérifie   : il n'y a plus de nœud Translate.
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F61-remove-node
+    name: Supprimer un nœud d'un script
+    tags: [atp, critical, script]
+    depends_on: [F60-add-node]
+    steps:
+      - click: *add_node
+      - fill: *node_search
+        value: Translate
+      - click: { css: "[role=button]", has_text: "Move an object by x, y, z float offsets" }
+      - press: Escape
+      - expect: { target: &translate_node { css: ".svelte-flow__node-translate_node" }, count: 1 }
+      - click: { css: ".svelte-flow__node-translate_node .dragHandle" }
+      - click: { css: ".svelte-flow__controls button[title=Delete]" }
+      - expect: { target: *translate_node, count: 0 }
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F62 · Relier des nœuds
+  #   Teste     : tirer un fil de la sortie de Value vers l'entrée Y de Rotate.
+  #   Le script : On Every Frame ──▶ Rotate (axe Y) ◀── Value (float 2) : tourner de 2° par
+  #               image autour de Y.
+  #   Vérifie   : 2 liens dans le graphe (celui de F59 et le nouveau).
+  #   Capture   : screenshots/F62-link-nodes-graph.png
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F62-link-nodes
+    name: Relier des nœuds dans un script
+    tags: [atp, secondary, script]
+    depends_on: [F60-add-node]
+    steps:
+      - choose: { css: ".svelte-flow__node-value_node select" }
+        option: float
+      - fill: { placeholder: Enter a float }
+        value: "2"
+      - drag: { css: "[data-handleid=value_node_source_1]" }
+        to: { css: "[data-handleid=rotate_node_target_3]" }
+        steps: 12
+      - expect: { target: *edges, count: 2 }
+      - screenshot: graph
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F63 · Délier des nœuds
+  #   Teste     : cliquer le fil Value ─▶ Rotate pour le sélectionner, puis la touche
+  #               d'effacement du clavier.
+  #   Vérifie   : il reste 1 lien.
+  #   Note      : l'éditeur de nœuds (xyflow) efface avec Retour arrière (la touche « delete »
+  #               des claviers Mac) ; la touche Suppr d'un clavier PC n'y est pas reliée.
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F63-unlink-nodes
+    name: Délier des nœuds dans un script
+    tags: [atp, critical, script]
+    depends_on: [F62-link-nodes]
+    steps:
+      # Le fil Value ─▶ Rotate est le dernier créé ; le centre de sa boîte est sur la courbe.
+      - click: { css: ".svelte-flow__edge", nth: last }
+      - press: Backspace
+      - expect: { target: *edges, count: 1 }
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F64 · Se déplacer dans le script
+  #   Teste     : clic milieu maintenu sur une zone vide du canevas, en tirant la souris.
+  #   Vérifie   : la vue du canevas s'est déplacée (sa transformation CSS a changé).
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F64-pan-script
+    name: Se déplacer dans un script (clic milieu)
+    tags: [atp, secondary, script]
+    depends_on: [F59-create-script]
+    steps:
+      - click: *tab_scripting
+      - store: flow_before
+        js: "() => getComputedStyle(document.querySelector('.svelte-flow__viewport')).transform"
+      # Une zone vide en haut du canevas, sous les boutons « Add node », « Variables »…
+      - drag: *pane
+        from_offset: { x: -60, y: -290 }
+        to: *pane
+        to_offset: { x: 100, y: -200 }
+        button: middle
+        steps: 15
+      - expect:
+          js: "() => getComputedStyle(document.querySelector('.svelte-flow__viewport')).transform !== '${var.flow_before}'"
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F65 · Écrire un script avec l'assistant IA
+  #   Teste     : le panneau « AI Assistant » : un prompt en français décrit le comportement
+  #               voulu ; l'IA réécrit le script ouvert.
+  #   Le prompt : faire flotter l'objet (Set Position, y = 1 + 0,5 × sin(temps × 2)).
+  #   Vérifie   : « Updated the script » sans « This script contains errors » (le graphe a
+  #               passé le vérificateur de types) ; au moins 4 nœuds et 3 liens, dont un Sin.
+  #   Note      : la réponse varie d'un run à l'autre : on vérifie la forme du graphe, pas son
+  #               contenu exact. Compter 15 à 60 s. Le script est enregistré par F66.
+  #   Capture   : screenshots/F65-ai-script-graph.png
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F65-ai-script
+    name: Créer un script avec l'assistant IA
+    tags: [atp, ui, script, ai]
+    depends_on: [F59-create-script]
+    steps:
+      - click: *tab_scripting
+      - fill: { placeholder: Ask the AI to explain or write your script }
+        value: >-
+          Réécris ce script : fais flotter cet objet au-dessus du sol. À chaque image, utilise
+          Set Position pour le placer en x = 0, z = 0 et y = 1 + 0.5 * sin(temps écoulé en
+          secondes * 2), le sinus étant calculé en radians. Il doit monter et descendre
+          doucement, sans fin.
+      - click: { role: button, name: Send, exact: true }
+      - expect: { target: { text: Updated the script, nth: first }, visible: true, timeout: 240s }
+      - expect: { target: { text: This script contains errors }, count: 0 }
+      - expect: { js: "() => document.querySelectorAll('.svelte-flow__node').length >= 4 && document.querySelectorAll('.svelte-flow__edge').length >= 3" }
+      - expect: { target: { css: ".svelte-flow__node-sin_node", nth: first }, visible: true }
+      - wait: 2s                 # laisse voir le graphe écrit par l'IA
+      - screenshot: graph
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F66 · Enregistrer un script
+  #   Teste     : « Save » sur le script modifié (nœuds, liens, IA).
+  #   Vérifie   : « Script saved » (le serveur a compilé le nouveau graphe).
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F66-save-script
+    name: Enregistrer un script
+    tags: [atp, secondary, script]
+    mutating: true
+    depends_on: [F59-create-script]
+    steps:
+      - click: *tab_scripting
+      - click: *save_script
+      - expect: { target: *script_saved, visible: true, timeout: 60s }
+    teardown:
+      - press: Escape            # ferme un éventuel « Save failed »
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F77 · Ajouter une variable (jouée ici, avec les autres features de l'onglet Scripting)
+  #   Teste     : « Variables » > nom « score », type int > « Add Variable ».
+  #   Vérifie   : la variable est listée, puis proposée comme nœud dans « Add node ».
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F77-add-variable
+    name: Ajouter une variable dans l'éditeur de scripts
+    tags: [atp, critical, script]
+    depends_on: [F59-create-script]
+    steps:
+      - click: *tab_scripting
+      - click: { role: button, name: Variables, exact: true }
+      - fill: { placeholder: Variable name, within: &variables_panel { css: "[data-scope=floating-panel][data-part=content]", has: { placeholder: Variable name } } }
+        value: score
+      - choose: { css: select, within: *variables_panel }
+        option: int
+      - click: { role: button, name: Add Variable, within: *variables_panel }
+      - expect: { target: { text: score, exact: true, within: *variables_panel }, visible: true }
+      - click: *add_node
+      - fill: *node_search
+        value: score
+      - expect: { target: { css: "[role=button]", has_text: score, nth: first }, visible: true }
+      - press: Escape
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F78 · Ajouter un composant au script (jouée ici, comme F77)
+  #   Teste     : « Components » > nom « Health » > « Add Component », puis un champ « hp ».
+  #   Constaté  : le 2026-11-21, en 1600 x 900, l'étiquette « Editing <script> » recouvre le
+  #               bouton Components : il n'est pas cliquable à la souris (défaut d'affichage).
+  #   Vérifie   : le composant et son champ « hp: float » sont listés ; « Save » enregistre le
+  #               script avec eux (« Script saved »).
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F78-add-script-component
+    name: Ajouter un composant dans l'éditeur de scripts
+    tags: [atp, secondary, script]
+    mutating: true
+    depends_on: [F59-create-script]
+    steps:
+      - click: *tab_scripting
+      # À cette taille de fenêtre, l'étiquette « Editing <script> » recouvre le bouton
+      # Components (on ne peut pas cliquer dessus à la souris) : on l'active au clavier,
+      # comme le ferait quelqu'un qui navigue avec Tab.
+      - press: Enter
+        target: { role: button, name: Components, exact: true }
+      - fill: { placeholder: Component name, within: &components_panel { css: "[data-scope=floating-panel][data-part=content]", has: { placeholder: Component name } } }
+        value: Health
+      - click: { role: button, name: Add Component, within: *components_panel }
+      - expect: { target: { text: Health, exact: true, within: *components_panel }, visible: true }
+      - fill: { placeholder: field, exact: true, within: *components_panel }
+        value: hp
+      - click: { role: button, name: Add, exact: true, within: *components_panel }
+      - expect: { target: { text: "hp: float", within: *components_panel }, visible: true }
+      - press: Escape
+      - click: *save_script
+      - expect: { target: *script_saved, visible: true, timeout: 60s }
+    teardown:
+      - press: Escape            # ferme un éventuel « Save failed »
+
+  # ════════════════════════════════════════════════════════════════════════════ HISTORIQUE
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F67 · Annuler / rétablir
+  #   Teste     : les flèches Undo et Redo en haut à gauche.
+  #   Vérifie   : scale X de « Object » passe à 2 puis 3 ; Undo le ramène à 2 ; Redo à 3.
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F67-undo-redo
+    name: Annuler puis rétablir une modification
+    tags: [atp, compat, editor]
+    mutating: true
+    depends_on: [F6-drag-asset]
+    steps:
+      - click: *tab_scene
+      - click: *tab_hierarchy
+      # Un clic (pas `select`) : depuis F52, plusieurs objets sont sélectionnés et la ligne
+      # Object l'est déjà ; un clic simple ramène la sélection à elle seule.
+      - click: *object_row
+      - expect: { target: *scale_x, visible: true }
+      - fill: *scale_x
+        value: "2"
+      - press: Enter
+        target: *scale_x
+      - expect: { target: *scale_x, number: 2 }
+      - fill: *scale_x
+        value: "3"
+      - press: Enter
+        target: *scale_x
+      - expect: { target: *scale_x, number: 3 }
+      - click: { role: button, name: Undo, exact: true }
+      - expect: { target: *scale_x, number: 2 }
+      - click: { role: button, name: Redo, exact: true }
+      - expect: { target: *scale_x, number: 3 }
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F68 · Versions de la scène
+  #   Teste     : ajouter une sphère, la supprimer, puis ouvrir l'historique des versions
+  #               (icône de branche) et restaurer la version d'avant la suppression.
+  #   Vérifie   : la sphère est revenue dans la hiérarchie.
+  #   Comment   : chaque modification crée une version. Le test lit la dernière (la
+  #               suppression) dans l'API ; celle d'avant (la création) porte le numéro
+  #               « v<seq> » dans la liste, où l'on clique « Restore ».
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F68-versions
+    name: Restaurer une version précédente de la scène
+    tags: [atp, critical, editor]
+    mutating: true
+    depends_on: [F3-create-game]
+    steps:
+      - click: *tab_hierarchy
+      - click: *tree_blank
+        button: right
+        position: { x: 100, y: 500 }
+      - click: { role: menuitem, name: Sphere, exact: true }
+      - expect: { target: &sphere_rows { role: treeitem, within: *hierarchy, has_text: Sphere }, count: 1, timeout: 20s }
+      - wait: 2s                 # laisse le serveur enregistrer la version
+      - click: { role: treeitem, within: *hierarchy, has_text: Sphere }
+        button: right
+      - click: { role: menuitem, name: Delete, exact: true }
+      - expect: { target: *sphere_rows, count: 0 }
+      - wait: 2s
+      - store: sphere_version
+        js: "async () => { const r = await fetch('${base.api}/room/${var.project_id}/versions', { credentials: 'include' }); const { versions } = await r.json(); return 'v' + versions[versions.length - 1].seq; }"
+      - click: { css: "[data-scope=popover][data-part=trigger]", has_text: History }
+      - expect: { target: { text: Version history }, visible: true }
+      - hover: &sphere_version_row { css: "div.group", has: { text: "${var.sphere_version}", exact: true } }
+      - click: { role: button, name: Restore, exact: true, within: *sphere_version_row }
+      - expect: { target: *sphere_rows, count: 1, timeout: 20s }
+      - press: Escape            # ferme l'historique
+      - screenshot: restored
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F69 · Retour à la liste des projets
+  #   Teste     : la flèche en haut à gauche de la barre d'outils.
+  #   Vérifie   : retour sur l'accueil de l'éditeur, avec la carte du projet e2e-<run id>.
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F69-back-to-projects
+    name: Revenir à la liste des projets
+    tags: [atp, ui, editor]
+    depends_on: [F3-create-game]
+    steps:
+      - click: { role: button, name: Go back }
+      - expect: { url: "${base.editor}/", timeout: 20s }
+      - expect: { target: { role: heading, name: Welcome back }, visible: true }
+      - expect: { target: { role: heading, name: "e2e-${run.id}", exact: true }, visible: true }
+
+  # ════════════════════════════════════════════════════════════════════════════ JOUEUR
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F70 · Publier le jeu
+  #   Teste     : « Publish » sur la carte du projet, avec une description, gratuit (prix 0).
+  #   Vérifie   : « Congratulations! », puis la carte porte « PUBLISHED ».
+  #   Pourquoi  : gratuit, il se lance tout de suite dans le launcher (F73) ; F75 le passe à
+  #               10 pièces et F76 l'achète.
+  #   Écrit     : un jeu public pendant le run. Nettoyage : « Unpublish Game » en fin de run.
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F70-publish
+    name: Publier le jeu sur la plateforme
+    tags: [atp, ui, publish]
+    mutating: true
+    depends_on: [F69-back-to-projects]
+    steps:
+      - goto: ${base.editor}/
+      - click: { role: button, name: Publish, exact: true, within: *project_card }
+      - fill: &publish_desc { id: publish-desc }
+        value: Jeu de test automatique (ATP), supprimé à la fin du run.
+      - fill: &publish_price { id: publish-price }
+        value: "0"
+      - click: &publish_game { role: button, name: Publish Game, exact: true }
+      - expect: { target: { role: heading, name: Congratulations! }, visible: true, timeout: 30s }
+      - click: { role: button, name: Back to dashboard }
+      - expect: { target: { text: PUBLISHED, within: *project_card }, visible: true }
+    cleanup:
+      - goto: ${base.editor}/
+      - click: { role: button, name: Edit, exact: true, within: *project_card }
+      - click: { role: button, name: Unpublish Game }
+      - expect: { target: { role: heading, name: Game Unpublished }, visible: true, timeout: 30s }
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F71 · Connexion au launcher
+  #   Teste     : le launcher (play.play-horizon.games) a sa propre connexion.
+  #   Vérifie   : sans session, il renvoie sur /login ; POST /login 2xx ; la recherche de jeux
+  #               s'affiche.
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F71-launcher-login
+    name: Connexion au launcher Horizon
+    tags: [atp, secondary, auth, launcher]
+    steps:
+      - goto: ${base.launcher}/
+      - expect: { url: "**/login" }
+      - fill: { label: Email }
+        value: ${env.HORIZON_EMAIL}
+      - fill: { label: Password, exact: true }
+        value: ${env.HORIZON_PASSWORD}
+      - click: { role: button, name: Sign In }
+        expect_response: { url: "**/login", method: POST, status: 2xx }
+      - expect: { target: &search { placeholder: "Rechercher des jeux, créateurs, genres..." }, visible: true }
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F72 · Acheter des pièces
+  #   Teste     : Boutique > pack de 500 pièces > Payer > Stripe Checkout, carte de test
+  #               4242 4242 4242 4242, 12/34, CVC 123 (celle de l'ATP).
+  #   Vérifie   : la page Stripe affiche « Environnement de test » (sinon on s'arrête avant
+  #               de payer) ; retour sur /shop avec « Paiement reçu » ; le solde a pris 500.
+  #   Écrit     : +500 pièces de test. Aucun argent réel : clé Stripe de test.
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F72-buy-coins
+    name: Acheter des pièces
+    tags: [atp, critical, payment, launcher]
+    mutating: true
+    depends_on: [F71-launcher-login]
+    steps:
+      - goto: ${base.launcher}/shop
+      - store: coins_before
+        js: "() => fetch('${base.api}/users/me', { credentials: 'include' }).then(r => r.json()).then(u => u.money ?? 0)"
+      - click: { css: "label:has(input[name=pack][value='500'])" }
+      - click: { role: button, name: Payer }
+        expect_response: { url: "**/payments/buy-coins", method: POST, status: 2xx }
+      - expect: { url: "https://checkout.stripe.com/**", timeout: 30s }
+      # Garde-fou : on ne paie que si Stripe affiche son bandeau de mode test, jamais en live.
+      - expect: { target: { text: Environnement de test, nth: first }, visible: true, timeout: 30s }
+      - fill: { frame: &stripe "iframe[src*='js.stripe.com/v3/elements-inner']:visible", id: linkAuthentication-emailInput }
+        value: ${env.HORIZON_EMAIL}
+      - click: { frame: *stripe, role: button, name: Carte bancaire }
+      - fill: { frame: *stripe, id: payment-numberInput }
+        value: "4242424242424242"
+      - fill: { frame: *stripe, id: payment-expiryInput }
+        value: "1234"
+      - fill: { frame: *stripe, id: payment-cvcInput }
+        value: "123"
+      - fill: &card_name { frame: *stripe, id: payment-nameInput }
+        value: E2E Horizon
+      # Entrée valide le formulaire sans viser une position à l'écran (voir critical.yaml).
+      - press: Enter
+        target: *card_name
+      - expect: { url: "${base.launcher}/shop*", timeout: 120s }
+      - expect: { target: { text: Paiement reçu }, visible: true, timeout: 30s }
+      - expect:
+          js: "async () => ((await (await fetch('${base.api}/users/me', { credentials: 'include' })).json()).money ?? 0) >= ${var.coins_before} + 500"
+          timeout: 30s
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F73 · Lancer un jeu
+  #   Teste     : onglet Découvrir > rechercher le jeu publié en F70 > « Jouer ».
+  #   Vérifie   : /play/<id>, titre « e2e-<run id> en cours », le canvas dessine le jeu.
+  #   Capture   : screenshots/F73-launch-game-game.png
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F73-launch-game
+    name: Lancer un jeu depuis le launcher
+    tags: [atp, secondary, 3d, play, launcher]
+    depends_on: [F70-publish, F71-launcher-login]
+    requires_webgpu: true
+    steps:
+      - goto: ${base.launcher}/
+      - click: { role: link, name: Découvrir, exact: true }
+      - fill: *search
+        value: e2e-${run.id}
+      - click: &game_card { role: button, name: "e2e-${run.id}", exact: true, nth: first }
+      - expect: { target: &game_dialog { role: dialog }, visible: true }
+      - click: { role: button, name: Jouer, within: *game_dialog }
+      - expect: { url: "**/play/*", timeout: 20s }
+      - expect: { title: "e2e-${run.id} en cours" }
+      # 60 s : le jeu publié se télécharge en entier, long sur une connexion lente.
+      - expect: { target: &launcher_canvas { id: game-canvas }, rendered: true, timeout: 60s }
+      - screenshot: game
+        of: *launcher_canvas
+      - wait: 3s                 # laisse voir le jeu tourner
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F74 · Quitter un jeu
+  #   Teste     : « Quitter » en haut à droite du jeu.
+  #   Vérifie   : retour à l'accueil du launcher (la recherche de jeux s'affiche).
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F74-quit-game
+    name: Quitter un jeu
+    tags: [atp, critical, play, launcher]
+    depends_on: [F73-launch-game]
+    steps:
+      - click: { role: button, name: Quitter }
+      - expect: { target: *search, visible: true, timeout: 20s }
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F75 · Modifier un jeu publié
+  #   Teste     : accueil de l'éditeur > « Edit » sur la carte > nouvelle description, tag 3D,
+  #               prix 10 pièces > « Publish Game ».
+  #   Vérifie   : « Congratulations! » ; rouvert, le formulaire a gardé la description et le
+  #               prix.
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F75-edit-published-game
+    name: Modifier un jeu publié
+    tags: [atp, ui, publish]
+    mutating: true
+    depends_on: [F70-publish]
+    steps:
+      - goto: ${base.editor}/
+      - click: &edit_game { role: button, name: Edit, exact: true, within: *project_card }
+      - fill: *publish_desc
+        value: Jeu de test ATP, modifié après publication (10 pièces).
+      - fill: *publish_price
+        value: "10"
+      - click: { role: button, name: 3D, exact: true }
+      - click: *publish_game
+      - expect: { target: { role: heading, name: Congratulations! }, visible: true, timeout: 30s }
+      - click: { role: button, name: Back to dashboard }
+      - click: *edit_game
+      - expect: { target: *publish_desc, value: "Jeu de test ATP, modifié après publication (10 pièces)." }
+      - expect: { target: *publish_price, number: 10 }
+      - click: { role: button, name: Cancel, exact: true }
+
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  # F76 · Acheter un jeu avec des pièces
+  #   Teste     : retrouver le jeu (désormais à 10 pièces) dans Découvrir et le débloquer.
+  #   Vérifie   : « Débloquer pour 10 pièces » ; POST /games/purchase 2xx ; le solde baisse de
+  #               10 exactement ; le bouton « Jouer » apparaît.
+  #   Écrit     : -10 pièces de test ; le jeu reste dans « Jeux achetés » du compte de test.
+  # ──────────────────────────────────────────────────────────────────────────────────────
+  - id: F76-buy-game
+    name: Acheter un jeu avec des pièces
+    tags: [atp, secondary, payment, launcher]
+    mutating: true
+    depends_on: [F75-edit-published-game, F72-buy-coins]
+    steps:
+      - goto: ${base.launcher}/
+      - click: { role: link, name: Découvrir, exact: true }
+      - fill: *search
+        value: e2e-${run.id}
+      - click: *game_card
+      - expect: { target: *game_dialog, visible: true }
+      - store: coins_before_unlock
+        js: "() => fetch('${base.api}/users/me', { credentials: 'include' }).then(r => r.json()).then(u => u.money ?? 0)"
+      - click: { role: button, name: Débloquer pour 10 pièces, within: *game_dialog }
+        expect_response: { url: "**/games/purchase", method: POST, status: 2xx }
+      - expect:
+          js: "async () => ((await (await fetch('${base.api}/users/me', { credentials: 'include' })).json()).money ?? 0) === ${var.coins_before_unlock} - 10"
+          timeout: 15s
+      - expect: { target: { role: button, name: Jouer, within: *game_dialog }, visible: true }

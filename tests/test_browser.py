@@ -39,8 +39,16 @@ document.getElementById('upload').addEventListener('change', e => console.log('u
 <div id="board" style="width:300px;height:100px;background:#eee"
      ondragover="event.preventDefault()" ondrop="event.preventDefault(); this.dataset.drop = Math.round(event.offsetX) + ',' + Math.round(event.offsetY)"></div>
 <div id="pad" style="width:300px;height:100px;background:#ddd"
-     onmousedown="this.dataset.moves = 0" onmousemove="if (event.buttons) this.dataset.moves = +this.dataset.moves + 1"
-     onmouseup="this.dataset.up = Math.round(event.offsetX) + ',' + Math.round(event.offsetY)"></div>
+     onmousedown="this.dataset.moves = 0; this.dataset.down = Math.round(event.offsetX) + ',' + Math.round(event.offsetY); this.dataset.button = event.button"
+     onmousemove="if (event.buttons) this.dataset.moves = +this.dataset.moves + 1"
+     onmouseup="this.dataset.up = Math.round(event.offsetX) + ',' + Math.round(event.offsetY)"
+     oncontextmenu="event.preventDefault()"></div>
+<script>
+// How long each key stays down, as a game engine that reads held keys every frame sees it.
+window.held = {}; const downAt = {};
+document.addEventListener('keydown', e => { if (!e.repeat) downAt[e.code] = performance.now(); });
+document.addEventListener('keyup', e => { window.held[e.code] = performance.now() - downAt[e.code]; });
+</script>
 <script>
 const s = document.getElementById('spin').getContext('2d'); let angle = 0;
 (function frame() { s.clearRect(0, 0, 120, 80); s.save(); s.translate(60, 40); s.rotate(angle += 0.1);
@@ -159,6 +167,15 @@ def test_script_editor_style_interactions(page_url):
             # steps: a mouse drag in small moves, as a node editor needs
             {"drag": {"id": "pad"}, "to": {"id": "pad"}, "to_position": {"x": 280, "y": 20}, "steps": 8},
             {"expect": {"js": "document.getElementById('pad').dataset.up === '280,20' && +document.getElementById('pad').dataset.moves >= 8"}},
+            # from_offset / to_offset: points from the centre (150, 50) of the 300x100 pad;
+            # button: the right button held all along, as the 3D viewport's look-around needs
+            {"drag": {"id": "pad"}, "from_offset": {"x": -100, "y": -30}, "to": {"id": "pad"}, "to_offset": {"x": 120, "y": 40}, "steps": 6, "button": "right"},
+            {"expect": {"js": "() => { const pad = document.getElementById('pad'); return pad.dataset.down === '50,20' && pad.dataset.up === '270,90' && pad.dataset.button === '2'; }"}},
+            # hold: the key stays down that long (a plain press is released at once)
+            {"press": "KeyW", "hold": "400ms"},
+            {"expect": {"js": "window.held.KeyW >= 350"}},
+            {"press": "Shift+KeyA", "hold": "200ms"},
+            {"expect": {"js": "window.held.ShiftLeft >= 150 && window.held.KeyA >= 150"}},
             {"expect": {"target": {"id": "spin"}, "animated": True}},
             {"expect": {"target": {"id": "drawn"}, "animated": False}},
             {"expect": {"target": {"id": "spin"}, "dominant_color": "#3366CC"}},

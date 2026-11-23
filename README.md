@@ -32,6 +32,13 @@ payant, achat de pièces par Stripe (carte de test), déblocage du jeu avec ces 
 dans le launcher. Le jeu « s'affiche » quand son canvas dessine autre chose qu'un fond uni
 (vérification `rendered`) ; la caméra est placée en (0, 1, 6) pour cadrer le cube.
 
+`scenarios/atp.yaml` rejoue les 78 features du document d'ATP (atp_770_Horizon), de F1 à F78,
+avec les mêmes numéros : inscription avec validation de l'e-mail (boîte mail.tm), éditeur de
+scène, chaque champ des composants (PointLight, DirectionalLight, Camera, Physics,
+CharacterController, Script), gizmos, réglages du jeu, éditeur de nœuds et assistant IA,
+historique des versions, publication, launcher, Stripe et achat du jeu. Voir
+[docs/scenarios.md](docs/scenarios.md#le-scénario-atp).
+
 `scenarios/engine.yaml` teste le moteur lui-même : un vrai modèle importé (l'ange
 « cemetery_angel », glTF texturé de 35 Mo), un sol, un cube et une sphère dorés et lisses
 (reflets), une lumière qui projette des ombres, un fond de caméra coloré, un script construit
@@ -144,9 +151,9 @@ features:
 | `select` | `select: { role: treeitem, has_text: Camera }` | clique seulement si l'élément n'est pas déjà sélectionné (`aria-selected`) : un clic sur une ligne sélectionnée de la hiérarchie la désélectionne |
 | `hover` | `hover: { text: Mon jeu }` | `timeout` |
 | `fill` | `fill: { label: Email }` + `value:` | `timeout` |
-| `press` | `press: Enter` | `target` (sinon : l'élément qui a le focus) |
+| `press` | `press: Enter` | `target` (sinon : l'élément qui a le focus), `hold: 1s` (touche tenue : la caméra de l'éditeur ne bouge que si la touche reste enfoncée ; `KeyW` = Z en AZERTY) |
 | `upload` | `upload: { css: "input[type=file]" }` + `files: [fixtures/a.glb]` | chemins relatifs au fichier |
-| `drag` | `drag: { text: cube }` + `to: { id: canvas }` | `to_position: { x, y }` (point d'arrivée dans `to`), `steps: 12` (glissé en 12 petits mouvements de souris : obligatoire dans l'éditeur de nœuds, qui ignore un saut unique), `timeout` |
+| `drag` | `drag: { text: cube }` + `to: { id: canvas }` | `to_position: { x, y }` (point d'arrivée dans `to`) ou `to_offset` (depuis son centre), `from_offset` (point de départ depuis le centre de `drag` : une poignée de gizmo), `steps: 12` (glissé en 12 petits mouvements de souris : obligatoire dans l'éditeur de nœuds et le viewport 3D, qui ignorent un saut unique), `button: right` ou `middle` (avec `steps`), `timeout` |
 | `choose` | `choose: { css: select }` + `option: float` | une option d'un `<select>`, par sa valeur ou son libellé |
 | `wait` | `wait: 2s` | à éviter : préférer un `expect` |
 | `reload` | `reload: true` | |

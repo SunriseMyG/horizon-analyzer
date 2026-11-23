@@ -26,10 +26,18 @@ Python 3.11+, Playwright (API sync, Chromium), Pydantic, Typer.
   `teardown` remet l'éditeur en ordre, puis la scène continue avec une couleur de fond. Enfin, il lance
   le jeu : la couleur dominante doit être le bleu choisi, et l'image doit bouger. Il ne publie et
   ne paie rien. GPU obligatoire.
+- `scenarios/atp.yaml` : les 78 features du document d'ATP (atp_770_Horizon), F1 à F78 avec
+  les numéros du document (F77 et F78 jouées après F66). Inscription avec code lu par l'API de mail.tm
+  (compte et boîte supprimés en cleanup ; yopmail est exclu : Cloudflare refuse les navigateurs
+  pilotés), tout l'éditeur, chaque champ des composants, publication,
+  launcher, Stripe. Écrit d'après le code source (clone du 2026-11-07), **pas encore lancé en
+  prod** : les sélecteurs repris de critical/engine sont sûrs, les autres sont à confirmer au
+  premier run. Besoin de `HORIZON_SIGNUP_PASSWORD` dans `.env`. Fichiers :
+  `scripts/make_atp_fixtures.py`.
 
 Le code source d'Horizon est dans un autre dépôt (monorepo alpha) :
 `C:\Users\steve\Documents\Epitech\eip\horizon`. C'est lui qui tourne en prod, pas `horizon-new`.
-Le service d'authentification n'est pas dans ce monorepo.
+Le service d'authentification est dans `services/auth_service`.
 
 ## Commandes
 
@@ -54,7 +62,7 @@ Ne lance jamais deux runs en même temps : ils partagent le même compte.
 
 | Fichier | Rôle |
 | --- | --- |
-| `schema.py` | Le DSL en Pydantic (`extra=forbid`). `Target` (une seule base parmi role/label/text/testid/css/id… + `within`, `has`, `has_text`, `nth`, `frame`). Un modèle par action (`goto`, `click`, `select`, `hover`, `fill`, `press`, `upload`, `drag`, `choose`, `wait`, `reload`, `screenshot`, `store`, `expect`). `drag` accepte `to_position` et `steps` (glissé en N petits mouvements : obligatoire dans l'éditeur de nœuds, qui ignore le saut unique de `drag_to`). `Expectation` : visible, text, value, number(+tolerance), count, enabled, checked, rendered, animated, dominant_color(+color_tolerance), url, title, console, no_console, js. `Feature` (depends_on, mutating, requires_webgpu, cleanup), `Suite`. |
+| `schema.py` | Le DSL en Pydantic (`extra=forbid`). `Target` (une seule base parmi role/label/text/testid/css/id… + `within`, `has`, `has_text`, `nth`, `frame`). Un modèle par action (`goto`, `click`, `select`, `hover`, `fill`, `press`, `upload`, `drag`, `choose`, `wait`, `reload`, `screenshot`, `store`, `expect`). `drag` accepte `to_position` ou `to_offset` (depuis le centre de `to`), `from_offset` (depuis le centre de `drag`), `steps` (glissé en N petits mouvements : obligatoire dans l'éditeur de nœuds et le viewport, qui ignorent le saut unique de `drag_to`) et `button` (`right`, `middle`, avec `steps`). `press` accepte `hold` (touche tenue : Bevy lit les touches enfoncées à chaque image). `Expectation` : visible, text, value, number(+tolerance), count, enabled, checked, rendered, animated, dominant_color(+color_tolerance), url, title, console, no_console, js. `Feature` (depends_on, mutating, requires_webgpu, cleanup), `Suite`. |
 | `loader.py` | Chargement YAML/JSON, `.env` (n'écrase pas l'environnement), `Context.render()` pour `${env.X}`, `${var.x}`, `${run.id}`, `${base.x}`. Les valeurs venant de `env` sont masquées (`***`) dans tous les rapports. |
 | `runner.py` | Orchestration, indépendante du navigateur (protocole `Executor`). Le `teardown` d'une feature est joué juste après elle, qu'elle passe ou non ; un échec n'y fait échouer qu'une feature qui passait. Statuts passed/failed/blocked/skipped. Une feature est sautée si une dépendance n'a pas passé, et bloquée si elle demande WebGPU sans adaptateur. Les cleanups sont enregistrés au début et joués en LIFO à la fin, même après un échec. `fail_on_console` fait échouer une feature qui passait. |
 | `browser.py` | `PlaywrightExecutor` : **une seule page** pour tout le run (la connexion de F1 sert à la suite). Voir « Mécanismes de robustesse ». |
@@ -197,6 +205,42 @@ contextuel, lien `target=_blank`, mini serveur HTTP pour le cache). `test_runner
 - **L'ange** s'importe comme un prefab « cemetery_angel_-_miller » (racine avec un Transform seul, rotation X −90°, échelle 1,0471, environ 2 m de haut), plus 16 meshes « angel.001_0 » et une texture. Déjà dans le catalogue du compte, il est retrouvé par son hash en 1 s, sans renvoyer les 35 Mo.
 - **Gels de 200 à 300 ms** dans l'éditeur (sélection, clic droit, Play) : ils sont identiques
   avec ou sans trace, donc côté app.
+
+### Lu dans le code source pour atp.yaml (à confirmer en prod)
+
+Constaté au premier run d'atp.yaml (2026-11-21) :
+
+- Les boutons « Game settings » et « History » de la barre d'outils sont des `<div>` (déclencheurs
+  Ark), pas des `button` : `{ css: "[data-scope=dialog][data-part=trigger]", has_text: Game settings }`
+  et `[data-scope=popover][data-part=trigger]` pour History.
+- « Save » d'un script refuse un graphe sans nœud relié au départ (« every trigger node is
+  empty ») et ouvre une alerte « Save failed » qui bloque toute la page : prévoir un `teardown`
+  avec `press: Escape`.
+- Un `.wasm` importé n'apparaît pas dans les assets (la liste vient de compile-service).
+- api.mail.tm n'envoie pas d'en-tête CORS : l'appeler depuis sa propre origine.
+- Clic droit maintenu dans le viewport : Chrome refuse le verrouillage du pointeur si la fenêtre
+  du test n'a pas le focus (« not valid for pointer lock ») ; bruit sans conséquence.
+
+- Caméra de l'éditeur (`scene/src/scene_camera.rs`) : départ en (10, 10, 10) vers l'origine ;
+  touches KeyW/A/S/D, Espace/Maj ; clic droit = regarder, clic milieu = déplacer. Position
+  gardée par projet dans `localStorage['camera-per-room']`. Touche F (hors champ texte) :
+  recentrer sur la sélection, sans changer l'orientation.
+- Gizmo (`transform-gizmo` 0.9) : 75 px ; translation = cercle central (vue), rotation =
+  arcball au centre, échelle = poignées d'axe seulement. Un glissé hors gizmo en mode Select
+  trace un rectangle de sélection.
+- Hiérarchie : `role=treeitem` avec `aria-level`, `aria-expanded` sur une branche (repliée par
+  défaut), bouton `[data-part=trigger]` pour déplier. Le menu propose aussi « Create Child »,
+  « Empty », « Sphere », « Point Light ».
+- Inspector : interrupteurs `[data-slot=switch]` ; collider = `<select>` ; touches du
+  CharacterController = un bouton qui ouvre un petit clavier (flèches ↑ ↓ ← →) ; Mesh, Texture et
+  Script se déposent sur « Drop … here » (un mesh depuis Assets > Meshes, pas My Assets).
+- Game settings (bouton « Game settings ») : curseur « Ambient light » (0-1000, défaut 500),
+  « Loading image », interrupteur « Performance Indicator ». Thème : radios « Light mode » /
+  « Dark mode ». Historique : bouton « History », lignes « v<seq+1> » avec « Restore ».
+- Éditeur de nœuds : supprimer = Retour arrière ou le bouton `title=Delete` des contrôles ;
+  clic milieu = déplacer la vue ; panneaux « Variables » et « Components » (zag floating-panel).
+- Inscription : mot de passe de 8 caractères minimum (majuscule, minuscule, chiffre, spécial) ;
+  code à 6 chiffres par e-mail (« Your Horizon verification code ») ; DELETE /users/<id>.
 
 ## Nettoyage et données de test
 
